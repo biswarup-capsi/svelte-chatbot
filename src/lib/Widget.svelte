@@ -1,6 +1,8 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
   import {open, openChat, openFaq, openAgent, showBot} from "./store";
+  import { onMount } from 'svelte'; 
+  import axios from 'axios';
 
   const handleOpen=() => {
     open.update(val=>!val);
@@ -26,6 +28,20 @@
     openFaq.update(val=>!val);
 
   }
+  
+  $effect(()=>{
+    void $openChat;
+    console.log("hello from effect")
+  })
+
+  let users=$state([]);
+  
+  onMount(async ()=>{
+    const res=await axios.get("https://jsonplaceholder.typicode.com/users")
+    users=res.data
+    // console.log(users)
+  })
+  
 </script>
 
 <style>
@@ -101,13 +117,13 @@
   {/if}
   
   {#if ($openChat && !($open))}
-      <div class="chat-dialog" transition:fly="{{ x: 20, duration: 300 }}">
+      <div class="chat-dialog" transition:fly="{{ y: 20, duration: 300 }}">
       <div class="chat-header">
         <div>
           <h1>ChatFlow</h1>
           <p>A live chat interface that allows for seamless, natural communication and connection.</p>
         </div>
-        <div class="cross" role="button" tabindex="0" onclick={() => {openChat.update(val=>!val); showBot.set(true)}} onkeydown={(e) => e.key === "enter" && openChat.update(val=>!val)}>
+        <div class="cross" role="button" tabindex="0" onclick={() => {openChat.update(val=>!val); showBot.set(true)}} onkeydown={(e) => e.key === "enter" && openChat.update(val=>!val)} >
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-x-icon lucide-circle-x"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
         </div>
       </div>
@@ -137,7 +153,7 @@
   {/if}
 
   {#if ($openAgent && !($open))}
-    <div class="chat-dialog" transition:fly="{{ x: 20, duration: 300 }}">
+    <div class="chat-dialog" transition:fly="{{ y: 20, duration: 300 }}">
       <div class="chat-header">
         <div>
           <h1>ChatFlow</h1>
@@ -151,6 +167,9 @@
         <p class="bot-msg">Thanks for joining us! Let's start by getting your name.</p>
         <ul class="user-msg">
           <li>John</li>
+          {#each users as user}
+            <li>{user.name}</li>
+          {/each}
         </ul>
         
          <div class="input">

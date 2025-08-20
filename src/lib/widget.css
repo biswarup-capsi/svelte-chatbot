@@ -157,7 +157,8 @@
     padding: 0 12px 0 12px;
     padding-top: 169px;
     padding-bottom: 1.5rem;
-    overflow-y: auto;
+    overflow-y: scroll;
+    overflow-x: hidden;
   }
 
   .chat-options{
@@ -338,11 +339,13 @@
 
     .user-msg{
       display: flex;
-      justify-content: flex-end;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
     }
 
     .user-msg li{
-        display: inline-block;
+        /* display: inline-block; */
         width: fit-content;
         padding: 5px 12px 5px 12px;
         border: 1px solid #43319A;
