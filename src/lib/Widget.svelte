@@ -31,9 +31,13 @@
 
   let users=$state([]);
   
+  let payload:string|null=null;
   onMount(async ()=>{
     const res=await axios.get("https://jsonplaceholder.typicode.com/users")
     users=res.data
+
+    payload=document.querySelector("chat-widget")?.getAttribute("data-payload");
+    console.log("payload id: "+payload)
     // console.log(users)
   })
   
