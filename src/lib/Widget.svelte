@@ -1,11 +1,15 @@
 <script lang="ts">
-  import { fly } from 'svelte/transition';
+  import './types';
   import {open, openChat, openFaq, openAgent, showBot} from "./store";
   import { onMount } from 'svelte'; 
-  import axios from 'axios';
+  import axios, { type AxiosResponse } from 'axios';
+  import Agent from "./Agent.svelte";
+  import Faqs from "./Faqs.svelte";
+  import Welcome from "./Welcome.svelte";
+  import Chat from "./Chat.svelte";
 
   const handleOpen=() => {
-    open.update(val=>!val);
+    open.set(true);
     openChat.set(false);
     openFaq.set(false);
     openAgent.set(false);
@@ -29,11 +33,10 @@
 
   }
 
-  let users=$state([]);
-  
+  let users:Users=$state([]);
   let payload:string|null=null;
   onMount(async ()=>{
-    const res=await axios.get("https://jsonplaceholder.typicode.com/users")
+    const res:AxiosResponse<Users,null>=await axios.get("https://jsonplaceholder.typicode.com/users")
     users=res.data
 
     payload=document.querySelector("chat-widget")?.getAttribute("data-payload");
@@ -44,10 +47,6 @@
 </script>
 
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&family=Source+Sans+3:ital,wght@0,200..900;1,200..900&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&family=Questrial&family=Source+Sans+3:ital,wght@0,200..900;1,200..900&display=swap');
   @import "./widget.css";
 </style>
 
@@ -87,111 +86,20 @@
   {/if}
 
   {#if $open}
-      <div class="welcome-box" transition:fly="{{ y: 20, duration: 300 }}">
-        <div class="welcome">
-      <h1>Welcome to our website!</h1>
-      <p>Nice to meet you! If you have any question about our services, feel free to contact us.</p>
-    </div>
-    <div class="welcome-2">
-      <div class="faq" onclick={handleOpenFaq} onkeydown={e=>e.key==="Enter" && handleOpenFaq} aria-details="faq option" role="button" tabindex="0">FAQ</div>
-      <div class="talk" onclick={handleOpenChat} onkeydown={e=>e.key==="Enter" && handleOpenChat} aria-details="chat option" role="button" tabindex="0">Let's Talk</div>
-    </div>
-      </div>
+    <Welcome handleOpenChat={handleOpenChat} handleOpenFaq={handleOpenFaq} />
   {/if}
 
   {#if $openFaq && ($open==false)}
       {open.set(false)}
-      <div class="faq-box">
-        <div class="faq-options">
-            <ul class="faq-options-li">
-                <li>How do I apply?</li>
-                <li>What courses do you offer?</li>
-                <li> When do applications close?</li> 
-                <li>Where is the campus located?</li>
-                <li>Talk to someone?</li>
-                <div id="talk-btn" onclick={handleOpenAgent} onkeydown={e=>e.key==="Enter" && handleOpenAgent} aria-details="chat option" role="button" tabindex="0">Can I talk to someone?</div>
-            </ul>
-        </div>
-      </div>
+      <Faqs handleOpenAgent={handleOpenAgent} />
   {/if}
   
   {#if ($openChat && !($open))}
-      <div class="chat-dialog" transition:fly="{{ x: 20, duration: 300 }}">
-      <div class="chat-header">
-        <div>
-          <h1>ChatFlow</h1>
-          <p>A live chat interface that allows for seamless, natural communication and connection.</p>
-        </div>
-        <div class="cross" role="button" tabindex="0" onclick={() => {openChat.update(val=>!val); showBot.set(true)}} onkeydown={(e) => e.key === "enter" && openChat.update(val=>!val)} >
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-x-icon lucide-circle-x"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
-        </div>
-      </div>
-      <div class="chat-body">
-        <div class="messages">
-          <p class="bot-msg">Hi! How Can I help You?</p>
-        <div class="chat-options">
-            <ul id="chat-options">
-                <li>How do I apply?</li>
-                <li>What courses do you offer?</li>
-                <li> When do applications close?</li> 
-                <li>Where is the campus located?</li>
-                <li>Talk to someone?</li>
-            </ul>
-        </div>
-        </div>
-        
-         <div class="input">
-          <input type="text" placeholder="Let's share something" onkeydown={(e) => e.key === "Enter" && console.log("recorded") } />
-          <!-- svelte-ignore a11y_consider_explicit_label -->
-          <button class="send" tabindex="0" onclick={() => console.log("recorded")}>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M0.176834 0.118496C0.329527 -0.0108545 0.544637 -0.0367025 0.723627 0.0527924L13.7236 6.55279C13.893 6.63748 14 6.81061 14 7C14 7.18939 13.893 7.36252 13.7236 7.44721L0.723627 13.9472C0.544637 14.0367 0.329527 14.0109 0.176834 13.8815C0.0241407 13.7522 -0.0367196 13.5442 0.0221319 13.353L1.97688 7L0.0221319 0.647048C-0.0367196 0.455781 0.0241407 0.247847 0.176834 0.118496ZM2.8693 7.5L1.32155 12.5302L12.382 7L1.32155 1.46979L2.8693 6.5H8.50001C8.77615 6.5 9.00001 6.72386 9.00001 7C9.00001 7.27614 8.77615 7.5 8.50001 7.5H2.8693Z" fill="white"/>
-            </svg>
-          </button>
-         </div>
-      </div>
-    </div>
+      <Chat />
   {/if}
 
   {#if ($openAgent && !($open))}
-    <div class="chat-dialog" transition:fly="{{ x: 20, duration: 300 }}">
-      <div class="chat-header">
-        <div>
-          <h1>ChatFlow</h1>
-          <p>A live chat interface that allows for seamless, natural communication and connection.</p>
-        </div>
-        <div class="cross" role="button" tabindex="0" onclick={() => {openAgent.update(val=>!val); openFaq.set(false); showBot.set(true)} } onkeydown={(e) => e.key === "enter" && openAgent.update(val=>!val)}>
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-x-icon lucide-circle-x"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
-        </div>
-      </div>
-
-
-  <div class="chat-body">
-    <div class="messages">
-      <p class="bot-msg">Thanks for joining us! Let's start by getting your name.</p>
-      <ul class="user-msg">
-        <li>John</li>
-        {#each users as user}
-          <li>{user.name}</li>
-        {/each}
-      </ul>
-    </div>
-
-    <div class="input">
-      <input type="text" placeholder="Let's share something" />
-      <!-- svelte-ignore a11y_consider_explicit_label -->
-      <button class="send">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
-          xmlns="http://www.w3.org/2000/svg">
-          <path
-            d="M0.176834 0.118496C0.329527 -0.0108545 0.544637 -0.0367025 0.723627 0.0527924L13.7236 6.55279C13.893 6.63748 14 6.81061 14 7C14 7.18939 13.893 7.36252 13.7236 7.44721L0.723627 13.9472C0.544637 14.0367 0.329527 14.0109 0.176834 13.8815C0.0241407 13.7522 -0.0367196 13.5442 0.0221319 13.353L1.97688 7L0.0221319 0.647048C-0.0367196 0.455781 0.0241407 0.247847 0.176834 0.118496ZM2.8693 7.5L1.32155 12.5302L12.382 7L1.32155 1.46979L2.8693 6.5H8.50001C8.77615 6.5 9.00001 6.72386 9.00001 7C9.00001 7.27614 8.77615 7.5 8.50001 7.5H2.8693Z"
-            fill="white" />
-        </svg>
-      </button>
-    </div>
-</div>
-
-    </div>
+      <Agent users={users} />
   {/if}
 
 </div>

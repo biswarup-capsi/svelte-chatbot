@@ -1,0 +1,39 @@
+.chat-header {
+  background: linear-gradient(
+    270deg,
+    #a7befe 0%,
+    #6e6ec5 36.11%,
+    #5347aa 64.88%,
+    #43319a 100%
+  );
+  padding: 0.8rem;
+  display: flex;
+  justify-content: space-between;
+  font-family: 'Figtree', sans-serif;
+}
+
+.chat-header div h1 {
+  font-family: "source sans 3", sans-serif;
+  font-weight: 700;
+  font-style: Bold;
+  font-size: 30px;
+  /* line-height: 100%; */
+  letter-spacing: 0%;
+}
+
+.chat-header div {
+  color: white;
+  font-family: "Questrial", sans-serif;
+  font-weight: 300;
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 22%;
+  display: inline;
+}
+
+.cross {
+  cursor: pointer;
+  padding-top: 1px;
+  font-size: 15rem;
+}
+

@@ -4,7 +4,11 @@ if (typeof window !== "undefined") {
 }
 const EACH_ITEM_REACTIVE = 1;
 const EACH_INDEX_REACTIVE = 1 << 1;
+const EACH_IS_CONTROLLED = 1 << 2;
+const EACH_IS_ANIMATED = 1 << 3;
 const EACH_ITEM_IMMUTABLE = 1 << 4;
+const PROPS_IS_RUNES = 1 << 1;
+const PROPS_IS_BINDABLE = 1 << 3;
 const TRANSITION_GLOBAL = 1 << 2;
 const TEMPLATE_FRAGMENT = 1;
 const TEMPLATE_USE_IMPORT_NODE = 1 << 1;
@@ -20,6 +24,7 @@ var array_from = Array.from;
 var object_keys = Object.keys;
 var define_property = Object.defineProperty;
 var get_descriptor = Object.getOwnPropertyDescriptor;
+var get_descriptors = Object.getOwnPropertyDescriptors;
 var object_prototype = Object.prototype;
 var array_prototype = Array.prototype;
 var get_prototype_of = Object.getPrototypeOf;
@@ -29,6 +34,9 @@ function is_function(thing) {
 }
 const noop$1 = () => {
 };
+function run(fn) {
+  return fn();
+}
 function run_all(arr) {
   for (var i = 0; i < arr.length; i++) {
     arr[i]();
@@ -214,7 +222,11 @@ function safe_not_equal(a, b) {
 function safe_equals(value) {
   return !safe_not_equal(value, this.v);
 }
+let legacy_mode_flag = false;
 let tracing_mode_flag = false;
+function enable_legacy_mode_flag() {
+  legacy_mode_flag = true;
+}
 let component_context = null;
 function set_component_context(context) {
   component_context = context;
@@ -226,7 +238,7 @@ function push(props, runes = false, fn) {
     e: null,
     s: props,
     x: null,
-    l: null
+    l: legacy_mode_flag && !runes ? { s: null, u: null, $: [] } : null
   };
 }
 function pop(component) {
@@ -241,14 +253,15 @@ function pop(component) {
       create_user_effect(fn);
     }
   }
+  if (component !== void 0) {
+    context.x = component;
+  }
   component_context = context.p;
-  return (
-    /** @type {T} */
-    {}
-  );
+  return component ?? /** @type {T} */
+  {};
 }
 function is_runes() {
-  return true;
+  return !legacy_mode_flag || component_context !== null && component_context.l === null;
 }
 const adjustments = /* @__PURE__ */ new WeakMap();
 function handle_error(error) {
@@ -512,7 +525,7 @@ function update_derived(derived2) {
   }
 }
 function flatten(sync, async, fn) {
-  const d = derived;
+  const d = is_runes() ? derived : derived_safe_equal;
   if (async.length === 0) {
     fn(sync.map(d));
     return;
@@ -993,6 +1006,9 @@ function mutable_source(initial_value, immutable = false, trackable = true) {
   if (!immutable) {
     s.equals = safe_equals;
   }
+  if (legacy_mode_flag && trackable && component_context !== null && component_context.l !== null) {
+    (component_context.l.s ??= []).push(s);
+  }
   return s;
 }
 function set(source2, value, should_proxy = false) {
@@ -1026,7 +1042,7 @@ function internal_set(source2, value) {
     }
     source2.wv = increment_write_version();
     mark_reactions(source2, DIRTY);
-    if (active_effect !== null && (active_effect.f & CLEAN) !== 0 && (active_effect.f & (BRANCH_EFFECT | ROOT_EFFECT)) === 0) {
+    if (is_runes() && active_effect !== null && (active_effect.f & CLEAN) !== 0 && (active_effect.f & (BRANCH_EFFECT | ROOT_EFFECT)) === 0) {
       if (untracked_writes === null) {
         set_untracked_writes([source2]);
       } else {
@@ -1042,10 +1058,12 @@ function increment(source2) {
 function mark_reactions(signal, status) {
   var reactions = signal.reactions;
   if (reactions === null) return;
+  var runes = is_runes();
   var length = reactions.length;
   for (var i = 0; i < length; i++) {
     var reaction = reactions[i];
     var flags = reaction.f;
+    if (!runes && reaction === active_effect) continue;
     var not_dirty = (flags & DIRTY) === 0;
     if (not_dirty) {
       set_signal_status(reaction, status);
@@ -1099,15 +1117,15 @@ function proxy(value) {
     /** @type {any} */
     value,
     {
-      defineProperty(_, prop, descriptor) {
+      defineProperty(_, prop2, descriptor) {
         if (!("value" in descriptor) || descriptor.configurable === false || descriptor.enumerable === false || descriptor.writable === false) {
           state_descriptors_fixed();
         }
-        var s = sources.get(prop);
+        var s = sources.get(prop2);
         if (s === void 0) {
           s = with_parent(() => {
             var s2 = /* @__PURE__ */ state(descriptor.value);
-            sources.set(prop, s2);
+            sources.set(prop2, s2);
             return s2;
           });
         } else {
@@ -1115,12 +1133,12 @@ function proxy(value) {
         }
         return true;
       },
-      deleteProperty(target, prop) {
-        var s = sources.get(prop);
+      deleteProperty(target, prop2) {
+        var s = sources.get(prop2);
         if (s === void 0) {
-          if (prop in target) {
+          if (prop2 in target) {
             const s2 = with_parent(() => /* @__PURE__ */ state(UNINITIALIZED));
-            sources.set(prop, s2);
+            sources.set(prop2, s2);
             increment(version);
           }
         } else {
@@ -1129,33 +1147,33 @@ function proxy(value) {
         }
         return true;
       },
-      get(target, prop, receiver) {
-        if (prop === STATE_SYMBOL) {
+      get(target, prop2, receiver) {
+        if (prop2 === STATE_SYMBOL) {
           return value;
         }
-        var s = sources.get(prop);
-        var exists = prop in target;
-        if (s === void 0 && (!exists || get_descriptor(target, prop)?.writable)) {
+        var s = sources.get(prop2);
+        var exists = prop2 in target;
+        if (s === void 0 && (!exists || get_descriptor(target, prop2)?.writable)) {
           s = with_parent(() => {
-            var p = proxy(exists ? target[prop] : UNINITIALIZED);
+            var p = proxy(exists ? target[prop2] : UNINITIALIZED);
             var s2 = /* @__PURE__ */ state(p);
             return s2;
           });
-          sources.set(prop, s);
+          sources.set(prop2, s);
         }
         if (s !== void 0) {
           var v = get$1(s);
           return v === UNINITIALIZED ? void 0 : v;
         }
-        return Reflect.get(target, prop, receiver);
+        return Reflect.get(target, prop2, receiver);
       },
-      getOwnPropertyDescriptor(target, prop) {
-        var descriptor = Reflect.getOwnPropertyDescriptor(target, prop);
+      getOwnPropertyDescriptor(target, prop2) {
+        var descriptor = Reflect.getOwnPropertyDescriptor(target, prop2);
         if (descriptor && "value" in descriptor) {
-          var s = sources.get(prop);
+          var s = sources.get(prop2);
           if (s) descriptor.value = get$1(s);
         } else if (descriptor === void 0) {
-          var source2 = sources.get(prop);
+          var source2 = sources.get(prop2);
           var value2 = source2?.v;
           if (source2 !== void 0 && value2 !== UNINITIALIZED) {
             return {
@@ -1168,20 +1186,20 @@ function proxy(value) {
         }
         return descriptor;
       },
-      has(target, prop) {
-        if (prop === STATE_SYMBOL) {
+      has(target, prop2) {
+        if (prop2 === STATE_SYMBOL) {
           return true;
         }
-        var s = sources.get(prop);
-        var has = s !== void 0 && s.v !== UNINITIALIZED || Reflect.has(target, prop);
-        if (s !== void 0 || active_effect !== null && (!has || get_descriptor(target, prop)?.writable)) {
+        var s = sources.get(prop2);
+        var has = s !== void 0 && s.v !== UNINITIALIZED || Reflect.has(target, prop2);
+        if (s !== void 0 || active_effect !== null && (!has || get_descriptor(target, prop2)?.writable)) {
           if (s === void 0) {
             s = with_parent(() => {
-              var p = has ? proxy(target[prop]) : UNINITIALIZED;
+              var p = has ? proxy(target[prop2]) : UNINITIALIZED;
               var s2 = /* @__PURE__ */ state(p);
               return s2;
             });
-            sources.set(prop, s);
+            sources.set(prop2, s);
           }
           var value2 = get$1(s);
           if (value2 === UNINITIALIZED) {
@@ -1190,10 +1208,10 @@ function proxy(value) {
         }
         return has;
       },
-      set(target, prop, value2, receiver) {
-        var s = sources.get(prop);
-        var has = prop in target;
-        if (is_proxied_array && prop === "length") {
+      set(target, prop2, value2, receiver) {
+        var s = sources.get(prop2);
+        var has = prop2 in target;
+        if (is_proxied_array && prop2 === "length") {
           for (var i = value2; i < /** @type {Source<number>} */
           s.v; i += 1) {
             var other_s = sources.get(i + "");
@@ -1206,27 +1224,27 @@ function proxy(value) {
           }
         }
         if (s === void 0) {
-          if (!has || get_descriptor(target, prop)?.writable) {
+          if (!has || get_descriptor(target, prop2)?.writable) {
             s = with_parent(() => /* @__PURE__ */ state(void 0));
             set(s, proxy(value2));
-            sources.set(prop, s);
+            sources.set(prop2, s);
           }
         } else {
           has = s.v !== UNINITIALIZED;
           var p = with_parent(() => proxy(value2));
           set(s, p);
         }
-        var descriptor = Reflect.getOwnPropertyDescriptor(target, prop);
+        var descriptor = Reflect.getOwnPropertyDescriptor(target, prop2);
         if (descriptor?.set) {
           descriptor.set.call(receiver, value2);
         }
         if (!has) {
-          if (is_proxied_array && typeof prop === "string") {
+          if (is_proxied_array && typeof prop2 === "string") {
             var ls = (
               /** @type {Source<number>} */
               sources.get("length")
             );
-            var n = Number(prop);
+            var n = Number(prop2);
             if (Number.isInteger(n) && n >= ls.v) {
               set(ls, n + 1);
             }
@@ -1465,6 +1483,10 @@ function user_effect(fn) {
 function create_user_effect(fn) {
   return create_effect(EFFECT | USER_EFFECT, fn, false);
 }
+function user_pre_effect(fn) {
+  validate_effect();
+  return create_effect(RENDER_EFFECT | USER_EFFECT, fn, true);
+}
 function effect_root(fn) {
   Batch.ensure();
   const effect2 = create_effect(ROOT_EFFECT, fn, true);
@@ -1491,6 +1513,39 @@ function component_root(fn) {
 }
 function effect(fn) {
   return create_effect(EFFECT, fn, false);
+}
+function legacy_pre_effect(deps, fn) {
+  var context = (
+    /** @type {ComponentContextLegacy} */
+    component_context
+  );
+  var token = { effect: null, ran: false, deps };
+  context.l.$.push(token);
+  token.effect = render_effect(() => {
+    deps();
+    if (token.ran) return;
+    token.ran = true;
+    untrack(fn);
+  });
+}
+function legacy_pre_effect_reset() {
+  var context = (
+    /** @type {ComponentContextLegacy} */
+    component_context
+  );
+  render_effect(() => {
+    for (var token of context.l.$) {
+      token.deps();
+      var effect2 = token.effect;
+      if ((effect2.f & CLEAN) !== 0) {
+        set_signal_status(effect2, MAYBE_DIRTY);
+      }
+      if (is_dirty(effect2)) {
+        update_effect(effect2);
+      }
+      token.ran = false;
+    }
+  });
 }
 function async_effect(fn) {
   return create_effect(ASYNC | EFFECT_PRESERVED, fn, true);
@@ -2051,8 +2106,83 @@ const STATUS_MASK = -7169;
 function set_signal_status(signal, status) {
   signal.f = signal.f & STATUS_MASK | status;
 }
+function deep_read_state(value) {
+  if (typeof value !== "object" || !value || value instanceof EventTarget) {
+    return;
+  }
+  if (STATE_SYMBOL in value) {
+    deep_read(value);
+  } else if (!Array.isArray(value)) {
+    for (let key in value) {
+      const prop2 = value[key];
+      if (typeof prop2 === "object" && prop2 && STATE_SYMBOL in prop2) {
+        deep_read(prop2);
+      }
+    }
+  }
+}
+function deep_read(value, visited = /* @__PURE__ */ new Set()) {
+  if (typeof value === "object" && value !== null && // We don't want to traverse DOM elements
+  !(value instanceof EventTarget) && !visited.has(value)) {
+    visited.add(value);
+    if (value instanceof Date) {
+      value.getTime();
+    }
+    for (let key in value) {
+      try {
+        deep_read(value[key], visited);
+      } catch (e) {
+      }
+    }
+    const proto = get_prototype_of(value);
+    if (proto !== Object.prototype && proto !== Array.prototype && proto !== Map.prototype && proto !== Set.prototype && proto !== Date.prototype) {
+      const descriptors2 = get_descriptors(proto);
+      for (let key in descriptors2) {
+        const get2 = descriptors2[key].get;
+        if (get2) {
+          try {
+            get2.call(value);
+          } catch (e) {
+          }
+        }
+      }
+    }
+  }
+}
 const all_registered_events = /* @__PURE__ */ new Set();
 const root_event_handles = /* @__PURE__ */ new Set();
+function create_event(event_name, dom, handler, options = {}) {
+  function target_handler(event2) {
+    if (!options.capture) {
+      handle_event_propagation.call(dom, event2);
+    }
+    if (!event2.cancelBubble) {
+      return without_reactive_context(() => {
+        return handler?.call(this, event2);
+      });
+    }
+  }
+  if (event_name.startsWith("pointer") || event_name.startsWith("touch") || event_name === "wheel") {
+    queue_micro_task(() => {
+      dom.addEventListener(event_name, target_handler, options);
+    });
+  } else {
+    dom.addEventListener(event_name, target_handler, options);
+  }
+  return target_handler;
+}
+function event(event_name, dom, handler, capture2, passive) {
+  var options = { capture: capture2, passive };
+  var target_handler = create_event(event_name, dom, handler, options);
+  if (dom === document.body || // @ts-ignore
+  dom === window || // @ts-ignore
+  dom === document || // Firefox has quirky behavior, it can happen that we still get "canplay" events when the element is already removed
+  dom instanceof HTMLMediaElement) {
+    teardown(() => {
+      dom.removeEventListener(event_name, target_handler, options);
+    });
+  }
+}
 function delegate(events) {
   for (var i = 0; i < events.length; i++) {
     all_registered_events.add(events[i]);
@@ -2062,26 +2192,26 @@ function delegate(events) {
   }
 }
 let last_propagated_event = null;
-function handle_event_propagation(event) {
+function handle_event_propagation(event2) {
   var handler_element = this;
   var owner_document = (
     /** @type {Node} */
     handler_element.ownerDocument
   );
-  var event_name = event.type;
-  var path = event.composedPath?.() || [];
+  var event_name = event2.type;
+  var path = event2.composedPath?.() || [];
   var current_target = (
     /** @type {null | Element} */
-    path[0] || event.target
+    path[0] || event2.target
   );
-  last_propagated_event = event;
+  last_propagated_event = event2;
   var path_idx = 0;
-  var handled_at = last_propagated_event === event && event.__root;
+  var handled_at = last_propagated_event === event2 && event2.__root;
   if (handled_at) {
     var at_idx = path.indexOf(handled_at);
     if (at_idx !== -1 && (handler_element === document || handler_element === /** @type {any} */
     window)) {
-      event.__root = handler_element;
+      event2.__root = handler_element;
       return;
     }
     var handler_idx = path.indexOf(handler_element);
@@ -2093,9 +2223,9 @@ function handle_event_propagation(event) {
     }
   }
   current_target = /** @type {Element} */
-  path[path_idx] || event.target;
+  path[path_idx] || event2.target;
   if (current_target === handler_element) return;
-  define_property(event, "currentTarget", {
+  define_property(event2, "currentTarget", {
     configurable: true,
     get() {
       return current_target || owner_document;
@@ -2116,12 +2246,12 @@ function handle_event_propagation(event) {
         if (delegated != null && (!/** @type {any} */
         current_target.disabled || // DOM could've been updated already by the time this is reached, so we check this as well
         // -> the target could not have been disabled because it emits the event in the first place
-        event.target === current_target)) {
+        event2.target === current_target)) {
           if (is_array(delegated)) {
             var [fn, ...data] = delegated;
-            fn.apply(current_target, [event, ...data]);
+            fn.apply(current_target, [event2, ...data]);
           } else {
-            delegated.call(current_target, event);
+            delegated.call(current_target, event2);
           }
         }
       } catch (error) {
@@ -2131,7 +2261,7 @@ function handle_event_propagation(event) {
           throw_error = error;
         }
       }
-      if (event.cancelBubble || parent_element === handler_element || parent_element === null) {
+      if (event2.cancelBubble || parent_element === handler_element || parent_element === null) {
         break;
       }
       current_target = parent_element;
@@ -2145,8 +2275,8 @@ function handle_event_propagation(event) {
       throw throw_error;
     }
   } finally {
-    event.__root = handler_element;
-    delete event.currentTarget;
+    event2.__root = handler_element;
+    delete event2.currentTarget;
     set_active_reaction(previous_reaction);
     set_active_effect(previous_effect);
   }
@@ -2376,7 +2506,9 @@ function onMount(fn) {
   if (component_context === null) {
     lifecycle_outside_component();
   }
-  {
+  if (legacy_mode_flag && component_context.l !== null) {
+    init_update_callbacks(component_context).m.push(fn);
+  } else {
     user_effect(() => {
       const cleanup = untrack(fn);
       if (typeof cleanup === "function") return (
@@ -2385,6 +2517,13 @@ function onMount(fn) {
       );
     });
   }
+}
+function init_update_callbacks(context) {
+  var l = (
+    /** @type {ComponentContextLegacy} */
+    context.l
+  );
+  return l.u ??= { a: [], b: [], m: [] };
 }
 function if_block(node, fn, elseif = false) {
   if (hydrating) {
@@ -2512,6 +2651,17 @@ function pause_effects(state2, items, controlled_anchor) {
 function each(node, flags, get_collection, get_key, render_fn, fallback_fn = null) {
   var anchor = node;
   var state2 = { flags, items: /* @__PURE__ */ new Map(), first: null };
+  var is_controlled = (flags & EACH_IS_CONTROLLED) !== 0;
+  if (is_controlled) {
+    var parent_node = (
+      /** @type {Element} */
+      node
+    );
+    anchor = hydrating ? set_hydrate_node(
+      /** @type {Comment | Text} */
+      /* @__PURE__ */ get_first_child(parent_node)
+    ) : parent_node.appendChild(create_text());
+  }
   if (hydrating) {
     hydrate_next();
   }
@@ -2619,8 +2769,8 @@ function each(node, flags, get_collection, get_key, render_fn, fallback_fn = nul
           key = get_key(value, i);
           var existing = state2.items.get(key) ?? offscreen_items.get(key);
           if (existing) {
-            {
-              update_item(existing, value, i);
+            if ((flags & (EACH_ITEM_REACTIVE | EACH_INDEX_REACTIVE)) !== 0) {
+              update_item(existing, value, i, flags);
             }
           } else {
             item = create_item(
@@ -2660,18 +2810,32 @@ function each(node, flags, get_collection, get_key, render_fn, fallback_fn = nul
   }
 }
 function reconcile(each_effect, array, state2, offscreen_items, anchor, render_fn, flags, get_key, get_collection) {
+  var is_animated = (flags & EACH_IS_ANIMATED) !== 0;
+  var should_update = (flags & (EACH_ITEM_REACTIVE | EACH_INDEX_REACTIVE)) !== 0;
   var length = array.length;
   var items = state2.items;
   var first = state2.first;
   var current = first;
   var seen;
   var prev = null;
+  var to_animate;
   var matched = [];
   var stashed = [];
   var value;
   var key;
   var item;
   var i;
+  if (is_animated) {
+    for (i = 0; i < length; i += 1) {
+      value = array[i];
+      key = get_key(value, i);
+      item = items.get(key);
+      if (item !== void 0) {
+        item.a?.measure();
+        (to_animate ??= /* @__PURE__ */ new Set()).add(item);
+      }
+    }
+  }
   for (i = 0; i < length; i += 1) {
     value = array[i];
     key = get_key(value, i);
@@ -2710,11 +2874,15 @@ function reconcile(each_effect, array, state2, offscreen_items, anchor, render_f
       current = prev.next;
       continue;
     }
-    {
-      update_item(item, value, i);
+    if (should_update) {
+      update_item(item, value, i, flags);
     }
     if ((item.e.f & INERT) !== 0) {
       resume_effect(item.e);
+      if (is_animated) {
+        item.a?.unfix();
+        (to_animate ??= /* @__PURE__ */ new Set()).delete(item);
+      }
     }
     if (item !== current) {
       if (seen !== void 0 && seen.has(item)) {
@@ -2776,9 +2944,25 @@ function reconcile(each_effect, array, state2, offscreen_items, anchor, render_f
     }
     var destroy_length = to_destroy.length;
     if (destroy_length > 0) {
-      var controlled_anchor = null;
+      var controlled_anchor = (flags & EACH_IS_CONTROLLED) !== 0 && length === 0 ? anchor : null;
+      if (is_animated) {
+        for (i = 0; i < destroy_length; i += 1) {
+          to_destroy[i].a?.measure();
+        }
+        for (i = 0; i < destroy_length; i += 1) {
+          to_destroy[i].a?.fix();
+        }
+      }
       pause_effects(state2, to_destroy, controlled_anchor);
     }
+  }
+  if (is_animated) {
+    queue_micro_task(() => {
+      if (to_animate === void 0) return;
+      for (item of to_animate) {
+        item.a?.apply();
+      }
+    });
   }
   each_effect.first = state2.first && state2.first.e;
   each_effect.last = prev && prev.e;
@@ -2788,10 +2972,16 @@ function reconcile(each_effect, array, state2, offscreen_items, anchor, render_f
   offscreen_items.clear();
 }
 function update_item(item, value, index2, type) {
-  {
+  if ((type & EACH_ITEM_REACTIVE) !== 0) {
     internal_set(item.v, value);
   }
-  {
+  if ((type & EACH_INDEX_REACTIVE) !== 0) {
+    internal_set(
+      /** @type {Value<number>} */
+      item.i,
+      index2
+    );
+  } else {
     item.i = index2;
   }
 }
@@ -3009,8 +3199,8 @@ function transition(flags, element, get_fn, get_params) {
   );
   (e.transitions ??= []).push(transition2);
   if (should_intro) {
-    var run = is_global;
-    if (!run) {
+    var run2 = is_global;
+    if (!run2) {
       var block2 = (
         /** @type {Effect | null} */
         e.parent
@@ -3020,9 +3210,9 @@ function transition(flags, element, get_fn, get_params) {
           if ((block2.f & BLOCK_EFFECT) !== 0) break;
         }
       }
-      run = !block2 || (block2.f & EFFECT_RAN) !== 0;
+      run2 = !block2 || (block2.f & EFFECT_RAN) !== 0;
     }
-    if (run) {
+    if (run2) {
       effect(() => {
         untrack(() => transition2.in());
       });
@@ -3139,14 +3329,71 @@ function animate(element, options, counterpart, t2, on_finish) {
     t: () => get_t()
   };
 }
-function subscribe_to_store(store, run, invalidate) {
+function init(immutable = false) {
+  const context = (
+    /** @type {ComponentContextLegacy} */
+    component_context
+  );
+  const callbacks = context.l.u;
+  if (!callbacks) return;
+  let props = () => deep_read_state(context.s);
+  if (immutable) {
+    let version = 0;
+    let prev = (
+      /** @type {Record<string, any>} */
+      {}
+    );
+    const d = /* @__PURE__ */ derived(() => {
+      let changed = false;
+      const props2 = context.s;
+      for (const key in props2) {
+        if (props2[key] !== prev[key]) {
+          prev[key] = props2[key];
+          changed = true;
+        }
+      }
+      if (changed) version++;
+      return version;
+    });
+    props = () => get$1(d);
+  }
+  if (callbacks.b.length) {
+    user_pre_effect(() => {
+      observe_all(context, props);
+      run_all(callbacks.b);
+    });
+  }
+  user_effect(() => {
+    const fns = untrack(() => callbacks.m.map(run));
+    return () => {
+      for (const fn of fns) {
+        if (typeof fn === "function") {
+          fn();
+        }
+      }
+    };
+  });
+  if (callbacks.a.length) {
+    user_effect(() => {
+      observe_all(context, props);
+      run_all(callbacks.a);
+    });
+  }
+}
+function observe_all(context, props) {
+  if (context.l.s) {
+    for (const signal of context.l.s) get$1(signal);
+  }
+  props();
+}
+function subscribe_to_store(store, run2, invalidate) {
   if (store == null) {
-    run(void 0);
+    run2(void 0);
     return noop$1;
   }
   const unsub = untrack(
     () => store.subscribe(
-      run,
+      run2,
       // @ts-expect-error
       invalidate
     )
@@ -3181,13 +3428,13 @@ function writable(value, start = noop$1) {
       value
     ));
   }
-  function subscribe(run, invalidate = noop$1) {
-    const subscriber = [run, invalidate];
+  function subscribe(run2, invalidate = noop$1) {
+    const subscriber = [run2, invalidate];
     subscribers.add(subscriber);
     if (subscribers.size === 1) {
       stop = start(set2, update) || noop$1;
     }
-    run(
+    run2(
       /** @type {T} */
       value
     );
@@ -3206,6 +3453,7 @@ function get(store) {
   subscribe_to_store(store, (_) => value = _)();
   return value;
 }
+let is_store_binding = false;
 let IS_UNMOUNTED = Symbol();
 function store_get(store, store_name, stores) {
   const entry = stores[store_name] ??= {
@@ -3252,6 +3500,112 @@ function setup_stores() {
   }
   return [stores, cleanup];
 }
+function capture_store_binding(fn) {
+  var previous_is_store_binding = is_store_binding;
+  try {
+    is_store_binding = false;
+    return [fn(), is_store_binding];
+  } finally {
+    is_store_binding = previous_is_store_binding;
+  }
+}
+function prop(props, key, flags, fallback) {
+  var runes = !legacy_mode_flag || (flags & PROPS_IS_RUNES) !== 0;
+  var bindable = (flags & PROPS_IS_BINDABLE) !== 0;
+  var fallback_value = (
+    /** @type {V} */
+    fallback
+  );
+  var fallback_dirty = true;
+  var get_fallback = () => {
+    if (fallback_dirty) {
+      fallback_dirty = false;
+      fallback_value = /** @type {V} */
+      fallback;
+    }
+    return fallback_value;
+  };
+  var setter;
+  {
+    var is_entry_props = STATE_SYMBOL in props || LEGACY_PROPS in props;
+    setter = get_descriptor(props, key)?.set ?? (is_entry_props && key in props ? (v) => props[key] = v : void 0);
+  }
+  var initial_value;
+  var is_store_sub = false;
+  {
+    [initial_value, is_store_sub] = capture_store_binding(() => (
+      /** @type {V} */
+      props[key]
+    ));
+  }
+  var getter;
+  if (runes) {
+    getter = () => {
+      var value = (
+        /** @type {V} */
+        props[key]
+      );
+      if (value === void 0) return get_fallback();
+      fallback_dirty = true;
+      return value;
+    };
+  } else {
+    getter = () => {
+      var value = (
+        /** @type {V} */
+        props[key]
+      );
+      if (value !== void 0) {
+        fallback_value = /** @type {V} */
+        void 0;
+      }
+      return value === void 0 ? fallback_value : value;
+    };
+  }
+  if (setter) {
+    var legacy_parent = props.$$legacy;
+    return (
+      /** @type {() => V} */
+      function(value, mutation) {
+        if (arguments.length > 0) {
+          if (!runes || !mutation || legacy_parent || is_store_sub) {
+            setter(mutation ? getter() : value);
+          }
+          return value;
+        }
+        return getter();
+      }
+    );
+  }
+  var overridden = false;
+  var d = /* @__PURE__ */ derived_safe_equal(() => {
+    overridden = false;
+    return getter();
+  });
+  get$1(d);
+  var parent_effect = (
+    /** @type {Effect} */
+    active_effect
+  );
+  return (
+    /** @type {() => V} */
+    function(value, mutation) {
+      if (arguments.length > 0) {
+        const new_value = mutation ? get$1(d) : runes && bindable ? proxy(value) : value;
+        set(d, new_value);
+        overridden = true;
+        if (fallback_value !== void 0) {
+          fallback_value = new_value;
+        }
+        return value;
+      }
+      if (is_destroying_effect && overridden || (parent_effect.f & DESTROYED) !== 0) {
+        return d.v;
+      }
+      return get$1(d);
+    }
+  );
+}
 function createClassComponent(options) {
   return new Svelte4Component(options);
 }
@@ -3275,17 +3629,17 @@ class Svelte4Component {
     const props = new Proxy(
       { ...options.props || {}, $$events: {} },
       {
-        get(target, prop) {
-          return get$1(sources.get(prop) ?? add_source(prop, Reflect.get(target, prop)));
+        get(target, prop2) {
+          return get$1(sources.get(prop2) ?? add_source(prop2, Reflect.get(target, prop2)));
         },
-        has(target, prop) {
-          if (prop === LEGACY_PROPS) return true;
-          get$1(sources.get(prop) ?? add_source(prop, Reflect.get(target, prop)));
-          return Reflect.has(target, prop);
+        has(target, prop2) {
+          if (prop2 === LEGACY_PROPS) return true;
+          get$1(sources.get(prop2) ?? add_source(prop2, Reflect.get(target, prop2)));
+          return Reflect.has(target, prop2);
         },
-        set(target, prop, value) {
-          set(sources.get(prop) ?? add_source(prop, value), value);
-          return Reflect.set(target, prop, value);
+        set(target, prop2, value) {
+          set(sources.get(prop2) ?? add_source(prop2, value), value);
+          return Reflect.set(target, prop2, value);
         }
       }
     );
@@ -3331,12 +3685,12 @@ class Svelte4Component {
    * @param {(...args: any[]) => any} callback
    * @returns {any}
    */
-  $on(event, callback) {
-    this.#events[event] = this.#events[event] || [];
+  $on(event2, callback) {
+    this.#events[event2] = this.#events[event2] || [];
     const cb = (...args) => callback.call(this, ...args);
-    this.#events[event].push(cb);
+    this.#events[event2].push(cb);
     return () => {
-      this.#events[event] = this.#events[event].filter(
+      this.#events[event2] = this.#events[event2].filter(
         /** @param {any} fn */
         (fn) => fn !== cb
       );
@@ -3521,10 +3875,10 @@ if (typeof HTMLElement === "function") {
     }
   };
 }
-function get_custom_element_value(prop, value, props_definition, transform) {
-  const type = props_definition[prop]?.type;
+function get_custom_element_value(prop2, value, props_definition, transform) {
+  const type = props_definition[prop2]?.type;
   value = type === "Boolean" && typeof value !== "boolean" ? value != null : value;
-  if (!transform || !props_definition[prop]) {
+  if (!transform || !props_definition[prop2]) {
     return value;
   } else if (transform === "toAttribute") {
     switch (type) {
@@ -3575,21 +3929,21 @@ function create_custom_element(Component, props_definition, slots, exports, use_
       );
     }
   };
-  object_keys(props_definition).forEach((prop) => {
-    define_property(Class.prototype, prop, {
+  object_keys(props_definition).forEach((prop2) => {
+    define_property(Class.prototype, prop2, {
       get() {
-        return this.$$c && prop in this.$$c ? this.$$c[prop] : this.$$d[prop];
+        return this.$$c && prop2 in this.$$c ? this.$$c[prop2] : this.$$d[prop2];
       },
       set(value) {
-        value = get_custom_element_value(prop, value, props_definition);
-        this.$$d[prop] = value;
+        value = get_custom_element_value(prop2, value, props_definition);
+        this.$$d[prop2] = value;
         var component = this.$$c;
         if (component) {
-          var setter = get_descriptor(component, prop)?.get;
+          var setter = get_descriptor(component, prop2)?.get;
           if (setter) {
-            component[prop] = value;
+            component[prop2] = value;
           } else {
-            component.$set({ [prop]: value });
+            component.$set({ [prop2]: value });
           }
         }
       }
@@ -3605,34 +3959,6 @@ function create_custom_element(Component, props_definition, slots, exports, use_
   Component.element = /** @type {any} */
   Class;
   return Class;
-}
-function cubic_out(t) {
-  const f = t - 1;
-  return f * f * f + 1;
-}
-function split_css_unit(value) {
-  const split = typeof value === "string" && value.match(/^\s*(-?[\d.]+)([^\s]*)\s*$/);
-  return split ? [parseFloat(split[1]), split[2] || "px"] : [
-    /** @type {number} */
-    value,
-    "px"
-  ];
-}
-function fly(node, { delay = 0, duration = 400, easing = cubic_out, x = 0, y = 0, opacity = 0 } = {}) {
-  const style = getComputedStyle(node);
-  const target_opacity = +style.opacity;
-  const transform = style.transform === "none" ? "" : style.transform;
-  const od = target_opacity * (1 - opacity);
-  const [x_value, x_unit] = split_css_unit(x);
-  const [y_value, y_unit] = split_css_unit(y);
-  return {
-    delay,
-    duration,
-    easing,
-    css: (t, u) => `
-			transform: ${transform} translate(${(1 - t) * x_value}${x_unit}, ${(1 - t) * y_value}${y_unit});
-			opacity: ${target_opacity - od * u}`
-  };
 }
 const showBot = writable(true);
 const open = writable(false);
@@ -3800,7 +4126,7 @@ const inherits = (constructor, superConstructor, props, descriptors2) => {
 const toFlatObject = (sourceObj, destObj, filter2, propFilter) => {
   let props;
   let i;
-  let prop;
+  let prop2;
   const merged = {};
   destObj = destObj || {};
   if (sourceObj == null) return destObj;
@@ -3808,10 +4134,10 @@ const toFlatObject = (sourceObj, destObj, filter2, propFilter) => {
     props = Object.getOwnPropertyNames(sourceObj);
     i = props.length;
     while (i-- > 0) {
-      prop = props[i];
-      if ((!propFilter || propFilter(prop, sourceObj, destObj)) && !merged[prop]) {
-        destObj[prop] = sourceObj[prop];
-        merged[prop] = true;
+      prop2 = props[i];
+      if ((!propFilter || propFilter(prop2, sourceObj, destObj)) && !merged[prop2]) {
+        destObj[prop2] = sourceObj[prop2];
+        merged[prop2] = true;
       }
     }
     sourceObj = filter2 !== false && getPrototypeOf(sourceObj);
@@ -3869,7 +4195,7 @@ const toCamelCase = (str) => {
     }
   );
 };
-const hasOwnProperty = (({ hasOwnProperty: hasOwnProperty2 }) => (obj, prop) => hasOwnProperty2.call(obj, prop))(Object.prototype);
+const hasOwnProperty = (({ hasOwnProperty: hasOwnProperty2 }) => (obj, prop2) => hasOwnProperty2.call(obj, prop2))(Object.prototype);
 const isRegExp = kindOfTest("RegExp");
 const reduceDescriptors = (obj, reducer) => {
   const descriptors2 = Object.getOwnPropertyDescriptors(obj);
@@ -4090,8 +4416,8 @@ AxiosError$1.from = (error, code, config, request, response, customProps) => {
   const axiosError = Object.create(prototype$1);
   utils$1.toFlatObject(error, axiosError, function filter2(obj) {
     return obj !== Error.prototype;
-  }, (prop) => {
-    return prop !== "isAxiosError";
+  }, (prop2) => {
+    return prop2 !== "isAxiosError";
   });
   AxiosError$1.call(axiosError, error.message, code, config, request, response);
   axiosError.cause = error;
@@ -4116,8 +4442,8 @@ function renderKey(path, key, dots) {
 function isFlatArray(arr) {
   return utils$1.isArray(arr) && !arr.some(isVisitable);
 }
-const predicates = utils$1.toFlatObject(utils$1, {}, null, function filter(prop) {
-  return /^is[A-Z]/.test(prop);
+const predicates = utils$1.toFlatObject(utils$1, {}, null, function filter(prop2) {
+  return /^is[A-Z]/.test(prop2);
 });
 function toFormData$1(obj, formData, options) {
   if (!utils$1.isObject(obj)) {
@@ -4991,7 +5317,7 @@ const headersToObject = (thing) => thing instanceof AxiosHeaders$1 ? { ...thing 
 function mergeConfig$1(config1, config2) {
   config2 = config2 || {};
   const config = {};
-  function getMergedValue(target, source2, prop, caseless) {
+  function getMergedValue(target, source2, prop2, caseless) {
     if (utils$1.isPlainObject(target) && utils$1.isPlainObject(source2)) {
       return utils$1.merge.call({ caseless }, target, source2);
     } else if (utils$1.isPlainObject(source2)) {
@@ -5001,11 +5327,11 @@ function mergeConfig$1(config1, config2) {
     }
     return source2;
   }
-  function mergeDeepProperties(a, b, prop, caseless) {
+  function mergeDeepProperties(a, b, prop2, caseless) {
     if (!utils$1.isUndefined(b)) {
-      return getMergedValue(a, b, prop, caseless);
+      return getMergedValue(a, b, prop2, caseless);
     } else if (!utils$1.isUndefined(a)) {
-      return getMergedValue(void 0, a, prop, caseless);
+      return getMergedValue(void 0, a, prop2, caseless);
     }
   }
   function valueFromConfig2(a, b) {
@@ -5020,10 +5346,10 @@ function mergeConfig$1(config1, config2) {
       return getMergedValue(void 0, a);
     }
   }
-  function mergeDirectKeys(a, b, prop) {
-    if (prop in config2) {
+  function mergeDirectKeys(a, b, prop2) {
+    if (prop2 in config2) {
       return getMergedValue(a, b);
-    } else if (prop in config1) {
+    } else if (prop2 in config1) {
       return getMergedValue(void 0, a);
     }
   }
@@ -5056,12 +5382,12 @@ function mergeConfig$1(config1, config2) {
     socketPath: defaultToConfig2,
     responseEncoding: defaultToConfig2,
     validateStatus: mergeDirectKeys,
-    headers: (a, b, prop) => mergeDeepProperties(headersToObject(a), headersToObject(b), prop, true)
+    headers: (a, b, prop2) => mergeDeepProperties(headersToObject(a), headersToObject(b), prop2, true)
   };
-  utils$1.forEach(Object.keys({ ...config1, ...config2 }), function computeConfigValue(prop) {
-    const merge2 = mergeMap[prop] || mergeDeepProperties;
-    const configValue = merge2(config1[prop], config2[prop], prop);
-    utils$1.isUndefined(configValue) && merge2 !== mergeDirectKeys || (config[prop] = configValue);
+  utils$1.forEach(Object.keys({ ...config1, ...config2 }), function computeConfigValue(prop2) {
+    const merge2 = mergeMap[prop2] || mergeDeepProperties;
+    const configValue = merge2(config1[prop2], config2[prop2], prop2);
+    utils$1.isUndefined(configValue) && merge2 !== mergeDirectKeys || (config[prop2] = configValue);
   });
   return config;
 }
@@ -5449,8 +5775,8 @@ const fetchAdapter = isFetchSupported && (async (config) => {
     const isStreamResponse = supportsResponseStream && (responseType === "stream" || responseType === "response");
     if (supportsResponseStream && (onDownloadProgress || isStreamResponse && unsubscribe)) {
       const options = {};
-      ["status", "statusText", "headers"].forEach((prop) => {
-        options[prop] = response[prop];
+      ["status", "statusText", "headers"].forEach((prop2) => {
+        options[prop2] = response[prop2];
       });
       const responseContentLength = utils$1.toFiniteNumber(response.headers.get("content-length"));
       const [onProgress, flush] = onDownloadProgress && progressEventDecorator(
@@ -6038,40 +6364,269 @@ const {
   getAdapter,
   mergeConfig
 } = axios;
-var on_keydown = (e, handleOpen) => e.key === "Enter" && handleOpen;
-var root_1 = /* @__PURE__ */ from_html(`<div class="chat-icon svelte-1i9700j" aria-live="polite" aria-label="Chat" role="button" tabindex="0"><svg width="75" height="68" viewBox="0 0 75 68" fill="none" xmlns="http://www.w3.org/2000/svg" class="svelte-1i9700j"><g filter="url(#filter0_d_8673_2670)" class="svelte-1i9700j"><ellipse cx="37.5002" cy="30" rx="25.1296" ry="21.6667" fill="white" class="svelte-1i9700j"></ellipse><path d="M37.5002 4C21.2078 4 8 15.6409 8 30.0002C8 37.3989 11.5062 44.0755 17.1343 48.81C17.0623 51.0675 16.2932 53.302 14.9482 55.0939C17.5558 54.9875 20.1101 53.9229 22.0741 52.1664C26.5625 54.598 31.8457 56.0004 37.5002 56.0004C53.7926 56.0004 67.0004 44.3595 67.0004 30.0002C67.0004 15.6409 53.7926 4 37.5002 4ZM55.8352 42.599C54.748 43.8262 53.1989 44.516 51.5813 44.516H23.4191C21.8015 44.516 20.2524 43.8262 19.1652 42.599C16.0867 39.1239 14.2522 34.7507 14.2522 29.9998C14.2522 25.249 16.0863 20.8761 19.1648 17.401C22.5117 13.622 27.3739 10.5 37.5 10.5C45.948 10.5 52.7599 13.9097 55.8733 17.4436C58.9292 20.9115 60.7482 25.2685 60.7482 29.9994C60.7482 34.7303 58.9137 39.1239 55.8352 42.599Z" fill="url(#paint0_linear_8673_2670)" class="svelte-1i9700j"></path><path d="M31.2311 29.1936C30.3741 30.545 29.1376 29.1936 26.5542 29.1936C23.9707 29.1936 22.7346 30.545 21.8776 29.1936C21.0482 27.8852 23.3365 24.6578 26.5542 24.6578C29.7718 24.6578 32.0602 27.8856 31.2311 29.1936Z" fill="#46359D" class="svelte-1i9700j"></path><path d="M53.1223 29.1936C52.2653 30.545 51.0287 29.1936 48.4453 29.1936C45.8618 29.1936 44.6257 30.545 43.7687 29.1936C42.9393 27.8852 45.2276 24.6578 48.4453 24.6578C51.6629 24.6578 53.9513 27.8856 53.1223 29.1936Z" fill="#46359D" class="svelte-1i9700j"></path><path d="M37.4996 35.3421C35.6966 35.3421 34.5071 33.8776 34.4573 33.8155C34.1879 33.4777 34.2365 32.9798 34.5662 32.7038C34.8959 32.4278 35.382 32.4776 35.6515 32.8153C35.6565 32.8213 36.4381 33.7621 37.4996 33.7621C38.5612 33.7621 39.3427 32.8213 39.3505 32.8118C39.62 32.474 40.1045 32.4258 40.4342 32.7018C40.7639 32.9779 40.8114 33.4773 40.5415 33.8151C40.4918 33.8776 39.3023 35.3417 37.4992 35.3417L37.4996 35.3421Z" fill="#46359D" class="svelte-1i9700j"></path></g><defs class="svelte-1i9700j"><filter id="filter0_d_8673_2670" x="0" y="0" width="75.0005" height="68.0004" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB" class="svelte-1i9700j"><feFlood flood-opacity="0" result="BackgroundImageFix" class="svelte-1i9700j"></feFlood><feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha" class="svelte-1i9700j"></feColorMatrix><feOffset dy="4" class="svelte-1i9700j"></feOffset><feGaussianBlur stdDeviation="4" class="svelte-1i9700j"></feGaussianBlur><feComposite in2="hardAlpha" operator="out" class="svelte-1i9700j"></feComposite><feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0" class="svelte-1i9700j"></feColorMatrix><feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_8673_2670" class="svelte-1i9700j"></feBlend><feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_8673_2670" result="shape" class="svelte-1i9700j"></feBlend></filter><linearGradient id="paint0_linear_8673_2670" x1="67.0004" y1="30.0002" x2="8" y2="30.0002" gradientUnits="userSpaceOnUse" class="svelte-1i9700j"><stop stop-color="#99A1E3" class="svelte-1i9700j"></stop><stop offset="0.129808" stop-color="#858EDC" class="svelte-1i9700j"></stop><stop offset="0.389423" stop-color="#635EBA" class="svelte-1i9700j"></stop><stop offset="1" stop-color="#43319A" class="svelte-1i9700j"></stop></linearGradient></defs></svg></div>`);
-var on_keydown_1 = (e, handleOpenFaq) => e.key === "Enter" && handleOpenFaq;
-var on_keydown_2 = (e, handleOpenChat) => e.key === "Enter" && handleOpenChat;
-var root_2 = /* @__PURE__ */ from_html(`<div class="welcome-box svelte-1i9700j"><div class="welcome svelte-1i9700j"><h1 class="svelte-1i9700j">Welcome to our website!</h1> <p class="svelte-1i9700j">Nice to meet you! If you have any question about our services, feel free to contact us.</p></div> <div class="welcome-2 svelte-1i9700j"><div class="faq svelte-1i9700j" aria-details="faq option" role="button" tabindex="0">FAQ</div> <div class="talk svelte-1i9700j" aria-details="chat option" role="button" tabindex="0">Let's Talk</div></div></div>`);
-var on_keydown_3 = (e, handleOpenAgent) => e.key === "Enter" && handleOpenAgent;
-var root_3 = /* @__PURE__ */ from_html(` <div class="faq-box svelte-1i9700j"><div class="faq-options svelte-1i9700j"><ul class="faq-options-li svelte-1i9700j"><li class="svelte-1i9700j">How do I apply?</li> <li class="svelte-1i9700j">What courses do you offer?</li> <li class="svelte-1i9700j">When do applications close?</li> <li class="svelte-1i9700j">Where is the campus located?</li> <li class="svelte-1i9700j">Talk to someone?</li> <div id="talk-btn" aria-details="chat option" role="button" tabindex="0" class="svelte-1i9700j">Can I talk to someone?</div></ul></div></div>`, 1);
-var on_keydown_4 = (e) => e.key === "Enter" && console.log("recorded");
-var on_click = () => console.log("recorded");
-var root_4 = /* @__PURE__ */ from_html(`<div class="chat-dialog svelte-1i9700j"><div class="chat-header svelte-1i9700j"><div class="svelte-1i9700j"><h1 class="svelte-1i9700j">ChatFlow</h1> <p class="svelte-1i9700j">A live chat interface that allows for seamless, natural communication and connection.</p></div> <div class="cross svelte-1i9700j" role="button" tabindex="0"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-x-icon lucide-circle-x svelte-1i9700j"><circle cx="12" cy="12" r="10" class="svelte-1i9700j"></circle><path d="m15 9-6 6" class="svelte-1i9700j"></path><path d="m9 9 6 6" class="svelte-1i9700j"></path></svg></div></div> <div class="chat-body svelte-1i9700j"><div class="messages svelte-1i9700j"><p class="bot-msg svelte-1i9700j">Hi! How Can I help You?</p> <div class="chat-options svelte-1i9700j"><ul id="chat-options" class="svelte-1i9700j"><li class="svelte-1i9700j">How do I apply?</li> <li class="svelte-1i9700j">What courses do you offer?</li> <li class="svelte-1i9700j">When do applications close?</li> <li class="svelte-1i9700j">Where is the campus located?</li> <li class="svelte-1i9700j">Talk to someone?</li></ul></div></div> <div class="input svelte-1i9700j"><input type="text" placeholder="Let's share something" class="svelte-1i9700j"/> <button class="send svelte-1i9700j" tabindex="0"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" class="svelte-1i9700j"><path d="M0.176834 0.118496C0.329527 -0.0108545 0.544637 -0.0367025 0.723627 0.0527924L13.7236 6.55279C13.893 6.63748 14 6.81061 14 7C14 7.18939 13.893 7.36252 13.7236 7.44721L0.723627 13.9472C0.544637 14.0367 0.329527 14.0109 0.176834 13.8815C0.0241407 13.7522 -0.0367196 13.5442 0.0221319 13.353L1.97688 7L0.0221319 0.647048C-0.0367196 0.455781 0.0241407 0.247847 0.176834 0.118496ZM2.8693 7.5L1.32155 12.5302L12.382 7L1.32155 1.46979L2.8693 6.5H8.50001C8.77615 6.5 9.00001 6.72386 9.00001 7C9.00001 7.27614 8.77615 7.5 8.50001 7.5H2.8693Z" fill="white" class="svelte-1i9700j"></path></svg></button></div></div></div>`);
-var root_6 = /* @__PURE__ */ from_html(`<li class="svelte-1i9700j"> </li>`);
-var root_5 = /* @__PURE__ */ from_html(`<div class="chat-dialog svelte-1i9700j"><div class="chat-header svelte-1i9700j"><div class="svelte-1i9700j"><h1 class="svelte-1i9700j">ChatFlow</h1> <p class="svelte-1i9700j">A live chat interface that allows for seamless, natural communication and connection.</p></div> <div class="cross svelte-1i9700j" role="button" tabindex="0"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-x-icon lucide-circle-x svelte-1i9700j"><circle cx="12" cy="12" r="10" class="svelte-1i9700j"></circle><path d="m15 9-6 6" class="svelte-1i9700j"></path><path d="m9 9 6 6" class="svelte-1i9700j"></path></svg></div></div> <div class="chat-body svelte-1i9700j"><div class="messages svelte-1i9700j"><p class="bot-msg svelte-1i9700j">Thanks for joining us! Let's start by getting your name.</p> <ul class="user-msg svelte-1i9700j"><li class="svelte-1i9700j">John</li> <!></ul></div> <div class="input svelte-1i9700j"><input type="text" placeholder="Let's share something" class="svelte-1i9700j"/> <button class="send svelte-1i9700j"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" class="svelte-1i9700j"><path d="M0.176834 0.118496C0.329527 -0.0108545 0.544637 -0.0367025 0.723627 0.0527924L13.7236 6.55279C13.893 6.63748 14 6.81061 14 7C14 7.18939 13.893 7.36252 13.7236 7.44721L0.723627 13.9472C0.544637 14.0367 0.329527 14.0109 0.176834 13.8815C0.0241407 13.7522 -0.0367196 13.5442 0.0221319 13.353L1.97688 7L0.0221319 0.647048C-0.0367196 0.455781 0.0241407 0.247847 0.176834 0.118496ZM2.8693 7.5L1.32155 12.5302L12.382 7L1.32155 1.46979L2.8693 6.5H8.50001C8.77615 6.5 9.00001 6.72386 9.00001 7C9.00001 7.27614 8.77615 7.5 8.50001 7.5H2.8693Z" fill="white" class="svelte-1i9700j"></path></svg></button></div></div></div>`);
-var root = /* @__PURE__ */ from_html(`<div class="svelte-1i9700j"><!> <!> <!> <!> <!></div>`);
-const $$css = {
-  hash: "svelte-1i9700j",
-  code: `\r
-  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap');\r
-  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&display=swap');\r
-  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&family=Source+Sans+3:ital,wght@0,200..900;1,200..900&display=swap');\r
-  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&family=Questrial&family=Source+Sans+3:ital,wght@0,200..900;1,200..900&display=swap');:host {all:initial;position:fixed;bottom:1rem;right:1rem;z-index:9999;}.chat-icon.svelte-1i9700j {bottom:20px;width:60px;height:60px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 8px rgba(0, 0, 0, 0.15);box-sizing:border-box;transition:all 0.3s ease-in-out;position:relative;}.chat-icon.svelte-1i9700j:hover {transform:scale(1.05);box-shadow:0 6px 12px rgba(0, 0, 0, 0.2);}.chat-dialog.svelte-1i9700j {position:absolute;bottom:20px;right:5%;width:400px;height:618px;background:white;border-radius:15px;box-shadow:0 4px 12px rgba(0, 0, 0, 0.2);display:flex;flex-direction:column;overflow:hidden;}.welcome-box.svelte-1i9700j {position:fixed;right:1%;bottom:90px;display:flex;flex-direction:column;gap:10px;margin-bottom:10px;font-family:Figtree;font-weight:700;font-style:Bold;font-size:16px;line-height:24px;letter-spacing:0%;max-height:calc((248-60) px);}.welcome.svelte-1i9700j {box-sizing:border-box;max-width:290px;max-height:124px;background:#e9e9e9;padding-top:12px;padding-right:24px;padding-bottom:12px;padding-left:24px;border-radius:24px 24px 0 24px;display:flex;flex-direction:column;}.welcome.svelte-1i9700j h1:where(.svelte-1i9700j) {font-size:16px;margin:0;padding:0;}.welcome.svelte-1i9700j p:where(.svelte-1i9700j) {box-sizing:border-box;font-family:"Figtree";font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;padding:0;margin:0;}.welcome-2.svelte-1i9700j {height:44px;display:flex;gap:10px;}.faq.svelte-1i9700j,\r
-.talk.svelte-1i9700j {background:linear-gradient(270deg, #a7befe 0%, #43319a 100%);height:44px;width:140px;display:flex;justify-content:center;align-items:center;border-radius:20px;color:white;font-size:16px;cursor:pointer;transition:all 0.2s ease-in-out;}.faq.svelte-1i9700j:hover {transform:scale(1.02);}.talk.svelte-1i9700j:hover {transform:scale(1.02);}.chat-header.svelte-1i9700j {background:linear-gradient(\r
+enable_legacy_mode_flag();
+function cubic_out(t) {
+  const f = t - 1;
+  return f * f * f + 1;
+}
+function split_css_unit(value) {
+  const split = typeof value === "string" && value.match(/^\s*(-?[\d.]+)([^\s]*)\s*$/);
+  return split ? [parseFloat(split[1]), split[2] || "px"] : [
+    /** @type {number} */
+    value,
+    "px"
+  ];
+}
+function fly(node, { delay = 0, duration = 400, easing = cubic_out, x = 0, y = 0, opacity = 0 } = {}) {
+  const style = getComputedStyle(node);
+  const target_opacity = +style.opacity;
+  const transform = style.transform === "none" ? "" : style.transform;
+  const od = target_opacity * (1 - opacity);
+  const [x_value, x_unit] = split_css_unit(x);
+  const [y_value, y_unit] = split_css_unit(y);
+  return {
+    delay,
+    duration,
+    easing,
+    css: (t, u) => `
+			transform: ${transform} translate(${(1 - t) * x_value}${x_unit}, ${(1 - t) * y_value}${y_unit});
+			opacity: ${target_opacity - od * u}`
+  };
+}
+var root$5 = /* @__PURE__ */ from_html(`<div class="chat-header svelte-153fpdw"><div class="svelte-153fpdw"><h1 class="svelte-153fpdw">ChatFlow</h1> <p>A live chat interface that allows for seamless, natural communication and connection.</p></div> <div class="cross svelte-153fpdw" role="button" tabindex="0"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-x-icon lucide-circle-x"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg></div></div>`);
+const $$css$5 = {
+  hash: "svelte-153fpdw",
+  code: `.chat-header.svelte-153fpdw {background:linear-gradient(\r
     270deg,\r
     #a7befe 0%,\r
     #6e6ec5 36.11%,\r
     #5347aa 64.88%,\r
     #43319a 100%\r
-  );padding:0.8rem;display:flex;justify-content:space-between;font-family:'Figtree', sans-serif;}.chat-header.svelte-1i9700j div:where(.svelte-1i9700j) h1:where(.svelte-1i9700j) {font-family:"source sans 3", sans-serif;font-weight:700;font-style:Bold;font-size:30px;\r
-  /* line-height: 100%; */letter-spacing:0%;}.chat-header.svelte-1i9700j div:where(.svelte-1i9700j) {color:white;font-family:"Questrial", sans-serif;font-weight:300;font-size:12px;line-height:16px;letter-spacing:22%;display:inline;}.cross.svelte-1i9700j {cursor:pointer;padding-top:1px;font-size:15rem;}.chat-body.svelte-1i9700j {flex:1;position:relative;height:inherit;padding:0 12px 0 12px;padding-top:169px;padding-bottom:1.5rem;\r
-  /* overflow-y: scroll; */overflow-x:hidden;}.chat-options.svelte-1i9700j {padding:0.5rem;}#chat-options.svelte-1i9700j {padding:0.5rem;outline:none;border-radius:10px;position:absolute;bottom:10%;right:0%;text-decoration:none;display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;}#chat-options.svelte-1i9700j li:where(.svelte-1i9700j) {padding:0.3rem;border:1px solid #a3b9fa;color:#6d6cc4;border-radius:16px;list-style:none;padding-right:12px;padding-left:12px;width:130;height:32;gap:8px;font-family:Inter;font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;vertical-align:middle;transition:border ease-in-out;}#chat-options.svelte-1i9700j li:where(.svelte-1i9700j):hover {border:2px solid #a3b9fa;cursor:pointer;}.input.svelte-1i9700j {position:absolute;bottom:0;left:0;}.input.svelte-1i9700j input:where(.svelte-1i9700j) {flex:1;height:32px;border:none;outline:none;background:transparent;}.input.svelte-1i9700j:focus {outline:none;}.send.svelte-1i9700j {background-color:#5347aa;width:32px;height:32px;display:flex;justify-content:center;align-items:center;opacity:1;border-radius:12px;border-width:1px;color:white;cursor:pointer;}.send.svelte-1i9700j svg:where(.svelte-1i9700j) {width:14px;height:14px;}.bot-msg.svelte-1i9700j {padding:12px;display:inline-block;max-width:290px;width:fit-content;border-top-right-radius:16px;border-bottom-right-radius:16px;border-bottom-left-radius:16px;padding-top:12px;text-align:left;background-color:#f4f4f4;font-family:"Outfit", sans-serif;font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;}.faq-box.svelte-1i9700j {width:290px;height:324px;display:flex;flex-direction:column;position:fixed;bottom:50px;right:1%;}.faq-options.svelte-1i9700j {padding:0.5rem;}.faq-options-li.svelte-1i9700j {padding:0.5rem;border-radius:10px;position:absolute;bottom:10%;right:0%;text-decoration:none;display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;}.faq-options-li.svelte-1i9700j li:where(.svelte-1i9700j) {cursor:pointer;background-color:#e9e9e9;padding:12px 24px 12px 24px;border-radius:24px;list-style:none;font-family:"Figtree", sans-serif;font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;text-align:right;display:flex;justify-content:center;align-items:center;}.faq-options-li.svelte-1i9700j li:where(.svelte-1i9700j):hover {transform:scale(1.03);cursor:pointer;}#talk-btn.svelte-1i9700j {cursor:pointer;background:linear-gradient(270deg, #a7befe 0%, #43319a 100%);border-radius:20px;width:290px;padding:12px 16px 12px 16px;color:white;font-family:DM Sans;font-weight:700;font-size:14px;line-height:20px;letter-spacing:0%;text-align:center;display:flex;justify-content:center;align-items:center;}.user-msg.svelte-1i9700j {display:flex;flex-direction:column;align-items:flex-end;gap:10px;margin:0;}.user-msg.svelte-1i9700j li:where(.svelte-1i9700j) {\r
-  /* display: inline-block; */width:fit-content;padding:5px 12px 5px 12px;border:1px solid #43319a;border-top-left-radius:16px;border-bottom-right-radius:16px;border-bottom-left-radius:16px;list-style:none;}.chat-dialog.svelte-1i9700j {position:absolute;bottom:20px;right:5%;width:400px;height:618px;background:white;border-radius:15px;box-shadow:0 4px 12px rgba(0, 0, 0, 0.2);display:flex;flex-direction:column;overflow:hidden;}.chat-body.svelte-1i9700j {display:flex;flex-direction:column;height:100%;padding:0 12px 0 12px;padding-top:16px;padding-bottom:1.5rem;border:1px solid #ccc;position:relative;}.svelte-1i9700j::-webkit-scrollbar{display:none;}.messages.svelte-1i9700j {flex:1;overflow-y:auto;}.input.svelte-1i9700j {display:flex;gap:10px;background:#fff;margin:12px;border:none;width:376px;height:48px;box-sizing:border-box;border:1px solid #f0f0f0f5;border-radius:12px;align-items:center;padding-left:12px;padding-right:12px;}.input.svelte-1i9700j input:where(.svelte-1i9700j) {flex:1;padding:8px;}\r
-  @media only screen and (max-width: 375px) {.chat-dialog.svelte-1i9700j {width:350px;margin:0;}.input.svelte-1i9700j {width:332px;}\r
-}\r
-  @media only screen and (max-width: 320px) {.chat-dialog.svelte-1i9700j {right:0;width:310px;margin:0;}.chat-body.svelte-1i9700j{width:300px;}\r
-}`
+  );padding:0.8rem;display:flex;justify-content:space-between;font-family:'Figtree', sans-serif;}.chat-header.svelte-153fpdw div:where(.svelte-153fpdw) h1:where(.svelte-153fpdw) {font-family:"source sans 3", sans-serif;font-weight:700;font-style:Bold;font-size:30px;\r
+  /* line-height: 100%; */letter-spacing:0%;}.chat-header.svelte-153fpdw div:where(.svelte-153fpdw) {color:white;font-family:"Questrial", sans-serif;font-weight:300;font-size:12px;line-height:16px;letter-spacing:22%;display:inline;}.cross.svelte-153fpdw {cursor:pointer;padding-top:1px;font-size:15rem;}`
+};
+function Header($$anchor, $$props) {
+  push($$props, false);
+  append_styles($$anchor, $$css$5);
+  const [$$stores, $$cleanup] = setup_stores();
+  const $openChat = () => store_get(openChat, "$openChat", $$stores);
+  const isChatOpen = /* @__PURE__ */ mutable_source();
+  legacy_pre_effect(() => $openChat(), () => {
+    set(isChatOpen, $openChat());
+  });
+  legacy_pre_effect_reset();
+  init();
+  var div = root$5();
+  var div_1 = sibling(child(div), 2);
+  reset(div);
+  event("click", div_1, () => {
+    if (get$1(isChatOpen)) {
+      openChat.set(false);
+    } else {
+      openAgent.set(false);
+      openFaq.set(false);
+    }
+    showBot.set(true);
+  });
+  event("keydown", div_1, (e) => e.key === "Enter" && openAgent.update((v) => !v));
+  append($$anchor, div);
+  pop();
+  $$cleanup();
+}
+create_custom_element(Header, {}, [], [], true);
+var root_1$3 = /* @__PURE__ */ from_html(`<li class="svelte-1er47rf"> </li>`);
+var root$4 = /* @__PURE__ */ from_html(`<div class="chat-dialog svelte-1er47rf"><!> <div class="chat-body svelte-1er47rf"><div class="messages svelte-1er47rf"><p class="bot-msg svelte-1er47rf">Thanks for joining us! Let's start by getting your name.</p> <ul class="user-msg svelte-1er47rf"><li class="svelte-1er47rf">John</li> <!></ul></div> <div class="input svelte-1er47rf"><input type="text" placeholder="Let's share something" class="svelte-1er47rf"/> <button class="send svelte-1er47rf"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" class="svelte-1er47rf"><path d="M0.176834 0.118496C0.329527 -0.0108545 0.544637 -0.0367025 0.723627 0.0527924L13.7236 6.55279C13.893 6.63748 14 6.81061 14 7C14 7.18939 13.893 7.36252 13.7236 7.44721L0.723627 13.9472C0.544637 14.0367 0.329527 14.0109 0.176834 13.8815C0.0241407 13.7522 -0.0367196 13.5442 0.0221319 13.353L1.97688 7L0.0221319 0.647048C-0.0367196 0.455781 0.0241407 0.247847 0.176834 0.118496ZM2.8693 7.5L1.32155 12.5302L12.382 7L1.32155 1.46979L2.8693 6.5H8.50001C8.77615 6.5 9.00001 6.72386 9.00001 7C9.00001 7.27614 8.77615 7.5 8.50001 7.5H2.8693Z" fill="white" class="svelte-1er47rf"></path></svg></button></div></div></div>`);
+const $$css$4 = {
+  hash: "svelte-1er47rf",
+  code: '.chat-dialog.svelte-1er47rf {position:absolute;bottom:20px;right:5%;width:400px;height:618px;background:white;border-radius:15px;box-shadow:0 4px 12px rgba(0, 0, 0, 0.2);display:flex;flex-direction:column;overflow:hidden;}.chat-body.svelte-1er47rf {flex:1;position:relative;height:inherit;padding:0 12px 0 12px;padding-top:169px;padding-bottom:1.5rem;\r\n  /* overflow-y: scroll; */overflow-x:hidden;}.input.svelte-1er47rf {position:absolute;bottom:0;left:0;}.input.svelte-1er47rf input:where(.svelte-1er47rf) {flex:1;height:32px;border:none;outline:none;background:transparent;}.input.svelte-1er47rf:focus {outline:none;}.send.svelte-1er47rf {background-color:#5347aa;width:32px;height:32px;display:flex;justify-content:center;align-items:center;opacity:1;border-radius:12px;border-width:1px;color:white;cursor:pointer;}.send.svelte-1er47rf svg:where(.svelte-1er47rf) {width:14px;height:14px;}.bot-msg.svelte-1er47rf {padding:12px;display:inline-block;max-width:290px;width:fit-content;border-top-right-radius:16px;border-bottom-right-radius:16px;border-bottom-left-radius:16px;padding-top:12px;text-align:left;background-color:#f4f4f4;font-family:"Outfit", sans-serif;font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;}.user-msg.svelte-1er47rf {display:flex;flex-direction:column;align-items:flex-end;gap:10px;margin:0;}.user-msg.svelte-1er47rf li:where(.svelte-1er47rf) {\r\n  /* display: inline-block; */width:fit-content;padding:5px 12px 5px 12px;border:1px solid #43319a;border-top-left-radius:16px;border-bottom-right-radius:16px;border-bottom-left-radius:16px;list-style:none;}.chat-dialog.svelte-1er47rf {position:absolute;bottom:20px;right:5%;width:400px;height:618px;background:white;border-radius:15px;box-shadow:0 4px 12px rgba(0, 0, 0, 0.2);display:flex;flex-direction:column;overflow:hidden;}.chat-body.svelte-1er47rf {display:flex;flex-direction:column;height:100%;padding:0 12px 0 12px;padding-top:16px;padding-bottom:1.5rem;border:1px solid #ccc;position:relative;}.svelte-1er47rf::-webkit-scrollbar{display:none;}.messages.svelte-1er47rf {flex:1;overflow-y:auto;}.input.svelte-1er47rf {display:flex;gap:10px;background:#fff;margin:12px;border:none;width:376px;height:48px;box-sizing:border-box;border:1px solid #f0f0f0f5;border-radius:12px;align-items:center;padding-left:12px;padding-right:12px;}.input.svelte-1er47rf input:where(.svelte-1er47rf) {flex:1;padding:8px;}\r\n\r\n\r\n@media only screen and (max-width: 375px) {.chat-dialog.svelte-1er47rf {width:350px;margin:0;}.input.svelte-1er47rf {width:332px;}\r\n}\r\n\r\n\r\n@media only screen and (max-width: 320px) {.chat-dialog.svelte-1er47rf {right:0;width:310px;margin:0;}.chat-body.svelte-1er47rf{width:300px;}\r\n}'
+};
+function Agent($$anchor, $$props) {
+  push($$props, false);
+  append_styles($$anchor, $$css$4);
+  let users = prop($$props, "users", 12);
+  var div = root$4();
+  var node = child(div);
+  Header(node, {});
+  var div_1 = sibling(node, 2);
+  var div_2 = child(div_1);
+  var ul = sibling(child(div_2), 2);
+  var node_1 = sibling(child(ul), 2);
+  each(node_1, 1, users, index, ($$anchor2, user) => {
+    var li = root_1$3();
+    var text = child(li, true);
+    reset(li);
+    template_effect(() => set_text(text, (get$1(user), untrack(() => get$1(user).name))));
+    append($$anchor2, li);
+  });
+  reset(ul);
+  reset(div_2);
+  next(2);
+  reset(div_1);
+  reset(div);
+  transition(3, div, () => fly, () => ({ x: 20, duration: 300 }));
+  append($$anchor, div);
+  return pop({
+    get users() {
+      return users();
+    },
+    set users($$value) {
+      users($$value);
+      flushSync();
+    }
+  });
+}
+create_custom_element(Agent, { users: {} }, [], [], true);
+var root_1$2 = /* @__PURE__ */ from_html(`<li class="svelte-74lyhp"> </li>`);
+var on_keydown$3 = (e, handleOpenAgent) => e.key === "Enter" && handleOpenAgent();
+var root$3 = /* @__PURE__ */ from_html(`<div class="faq-box svelte-74lyhp"><div class="faq-options svelte-74lyhp"><ul class="faq-options-li svelte-74lyhp"><!> <div id="talk-btn" aria-details="chat option" role="button" tabindex="0" class="svelte-74lyhp">Can I talk to someone?</div></ul></div></div>`);
+const $$css$3 = {
+  hash: "svelte-74lyhp",
+  code: '.faq-box.svelte-74lyhp {width:290px;height:324px;display:flex;flex-direction:column;position:fixed;bottom:50px;right:1%;}.faq-options.svelte-74lyhp {padding:0.5rem;}.faq-options-li.svelte-74lyhp {padding:0.5rem;border-radius:10px;position:absolute;bottom:10%;right:0%;text-decoration:none;display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;}.faq-options-li.svelte-74lyhp li:where(.svelte-74lyhp) {cursor:pointer;background-color:#e9e9e9;padding:12px 24px 12px 24px;border-radius:24px;list-style:none;font-family:"Figtree", sans-serif;font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;text-align:right;display:flex;justify-content:center;align-items:center;}.faq-options-li.svelte-74lyhp li:where(.svelte-74lyhp):hover {transform:scale(1.03);cursor:pointer;}#talk-btn.svelte-74lyhp {cursor:pointer;background:linear-gradient(270deg, #a7befe 0%, #43319a 100%);border-radius:20px;width:290px;padding:12px 16px 12px 16px;color:white;font-family:DM Sans;font-weight:700;font-size:14px;line-height:20px;letter-spacing:0%;text-align:center;display:flex;justify-content:center;align-items:center;}'
+};
+function Faqs($$anchor, $$props) {
+  push($$props, false);
+  append_styles($$anchor, $$css$3);
+  let handleOpenAgent = prop($$props, "handleOpenAgent", 12);
+  let faqs = [
+    "How do I apply?",
+    "What courses do you offer?",
+    "When do applications close?",
+    "Where is the campus located?",
+    "Talk to someone?"
+  ];
+  var div = root$3();
+  var div_1 = child(div);
+  var ul = child(div_1);
+  var node = child(ul);
+  each(node, 1, () => faqs, index, ($$anchor2, faq) => {
+    var li = root_1$2();
+    var text = child(li, true);
+    reset(li);
+    template_effect(() => set_text(text, get$1(faq)));
+    append($$anchor2, li);
+  });
+  var div_2 = sibling(node, 2);
+  div_2.__click = function(...$$args) {
+    handleOpenAgent()?.apply(this, $$args);
+  };
+  div_2.__keydown = [on_keydown$3, handleOpenAgent];
+  reset(ul);
+  reset(div_1);
+  reset(div);
+  append($$anchor, div);
+  return pop({
+    get handleOpenAgent() {
+      return handleOpenAgent();
+    },
+    set handleOpenAgent($$value) {
+      handleOpenAgent($$value);
+      flushSync();
+    }
+  });
+}
+delegate(["click", "keydown"]);
+create_custom_element(Faqs, { handleOpenAgent: {} }, [], [], true);
+var on_keydown$2 = (e, handleOpenFaq) => e.key === "Enter" && handleOpenFaq();
+var on_keydown_1 = (e, handleOpenChat) => e.key === "Enter" && handleOpenChat();
+var root$2 = /* @__PURE__ */ from_html(`<div class="welcome-box svelte-1deupph"><div class="welcome svelte-1deupph"><h1 class="svelte-1deupph">Welcome to our website!</h1> <p class="svelte-1deupph">Nice to meet you! If you have any question about our services, feel free to contact us.</p></div> <div class="welcome-2 svelte-1deupph"><div class="faq svelte-1deupph" aria-details="faq option" role="button" tabindex="0">FAQ</div> <div class="talk svelte-1deupph" aria-details="chat option" role="button" tabindex="0">Let's Talk</div></div></div>`);
+const $$css$2 = {
+  hash: "svelte-1deupph",
+  code: '.welcome-box.svelte-1deupph {position:fixed;right:1%;bottom:90px;display:flex;flex-direction:column;gap:10px;margin-bottom:10px;font-family:Figtree;font-weight:700;font-style:Bold;font-size:16px;line-height:24px;letter-spacing:0%;max-height:calc((248-60) px);}.welcome.svelte-1deupph {box-sizing:border-box;max-width:290px;max-height:124px;background:#e9e9e9;padding-top:12px;padding-right:24px;padding-bottom:12px;padding-left:24px;border-radius:24px 24px 0 24px;display:flex;flex-direction:column;}.welcome.svelte-1deupph h1:where(.svelte-1deupph) {font-size:16px;margin:0;padding:0;}.welcome.svelte-1deupph p:where(.svelte-1deupph) {box-sizing:border-box;font-family:"Figtree";font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;padding:0;margin:0;}.welcome-2.svelte-1deupph {height:44px;display:flex;gap:10px;}.faq.svelte-1deupph,\r\n.talk.svelte-1deupph {background:linear-gradient(270deg, #a7befe 0%, #43319a 100%);height:44px;width:140px;display:flex;justify-content:center;align-items:center;border-radius:20px;color:white;font-size:16px;cursor:pointer;transition:all 0.2s ease-in-out;}.faq.svelte-1deupph:hover {transform:scale(1.02);}.talk.svelte-1deupph:hover {transform:scale(1.02);}'
+};
+function Welcome($$anchor, $$props) {
+  push($$props, false);
+  append_styles($$anchor, $$css$2);
+  let handleOpenFaq = prop($$props, "handleOpenFaq", 12);
+  let handleOpenChat = prop($$props, "handleOpenChat", 12);
+  var div = root$2();
+  var div_1 = sibling(child(div), 2);
+  var div_2 = child(div_1);
+  div_2.__click = function(...$$args) {
+    handleOpenFaq()?.apply(this, $$args);
+  };
+  div_2.__keydown = [on_keydown$2, handleOpenFaq];
+  var div_3 = sibling(div_2, 2);
+  div_3.__click = function(...$$args) {
+    handleOpenChat()?.apply(this, $$args);
+  };
+  div_3.__keydown = [on_keydown_1, handleOpenChat];
+  reset(div_1);
+  reset(div);
+  transition(3, div, () => fly, () => ({ y: 20, duration: 300 }));
+  append($$anchor, div);
+  return pop({
+    get handleOpenFaq() {
+      return handleOpenFaq();
+    },
+    set handleOpenFaq($$value) {
+      handleOpenFaq($$value);
+      flushSync();
+    },
+    get handleOpenChat() {
+      return handleOpenChat();
+    },
+    set handleOpenChat($$value) {
+      handleOpenChat($$value);
+      flushSync();
+    }
+  });
+}
+delegate(["click", "keydown"]);
+create_custom_element(Welcome, { handleOpenFaq: {}, handleOpenChat: {} }, [], [], true);
+var root_1$1 = /* @__PURE__ */ from_html(`<li class="svelte-102bg4c"> </li>`);
+var on_keydown$1 = (e) => e.key === "Enter" && console.log("recorded");
+var on_click = () => console.log("recorded");
+var root$1 = /* @__PURE__ */ from_html(`<div class="chat-dialog svelte-102bg4c"><!> <div class="chat-body svelte-102bg4c"><div class="messages svelte-102bg4c"><p class="bot-msg svelte-102bg4c">Hi! How Can I help You?</p> <div class="chat-options svelte-102bg4c"><ul id="chat-options" class="svelte-102bg4c"></ul></div></div> <div class="input svelte-102bg4c"><input type="text" placeholder="Let's share something" class="svelte-102bg4c"/> <button class="send svelte-102bg4c" tabindex="0"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" class="svelte-102bg4c"><path d="M0.176834 0.118496C0.329527 -0.0108545 0.544637 -0.0367025 0.723627 0.0527924L13.7236 6.55279C13.893 6.63748 14 6.81061 14 7C14 7.18939 13.893 7.36252 13.7236 7.44721L0.723627 13.9472C0.544637 14.0367 0.329527 14.0109 0.176834 13.8815C0.0241407 13.7522 -0.0367196 13.5442 0.0221319 13.353L1.97688 7L0.0221319 0.647048C-0.0367196 0.455781 0.0241407 0.247847 0.176834 0.118496ZM2.8693 7.5L1.32155 12.5302L12.382 7L1.32155 1.46979L2.8693 6.5H8.50001C8.77615 6.5 9.00001 6.72386 9.00001 7C9.00001 7.27614 8.77615 7.5 8.50001 7.5H2.8693Z" fill="white" class="svelte-102bg4c"></path></svg></button></div></div></div>`);
+const $$css$1 = {
+  hash: "svelte-102bg4c",
+  code: '.chat-dialog.svelte-102bg4c {position:absolute;bottom:20px;right:5%;width:400px;height:618px;background:white;border-radius:15px;box-shadow:0 4px 12px rgba(0, 0, 0, 0.2);display:flex;flex-direction:column;overflow:hidden;}.chat-body.svelte-102bg4c {flex:1;position:relative;height:inherit;padding:0 12px 0 12px;padding-top:169px;padding-bottom:1.5rem;\r\n  /* overflow-y: scroll; */overflow-x:hidden;}.chat-options.svelte-102bg4c {padding:0.5rem;}#chat-options.svelte-102bg4c {padding:0.5rem;outline:none;border-radius:10px;position:absolute;bottom:10%;right:0%;text-decoration:none;display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;}#chat-options.svelte-102bg4c li:where(.svelte-102bg4c) {padding:0.3rem;border:1px solid #a3b9fa;color:#6d6cc4;border-radius:16px;list-style:none;padding-right:12px;padding-left:12px;width:130;height:32;gap:8px;font-family:Inter;font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;vertical-align:middle;transition:border ease-in-out;}#chat-options.svelte-102bg4c li:where(.svelte-102bg4c):hover {border:2px solid #a3b9fa;cursor:pointer;}.input.svelte-102bg4c {position:absolute;bottom:0;left:0;}.input.svelte-102bg4c input:where(.svelte-102bg4c) {flex:1;height:32px;border:none;outline:none;background:transparent;}.input.svelte-102bg4c:focus {outline:none;}.send.svelte-102bg4c {background-color:#5347aa;width:32px;height:32px;display:flex;justify-content:center;align-items:center;opacity:1;border-radius:12px;border-width:1px;color:white;cursor:pointer;}.send.svelte-102bg4c svg:where(.svelte-102bg4c) {width:14px;height:14px;}.bot-msg.svelte-102bg4c {padding:12px;display:inline-block;max-width:290px;width:fit-content;border-top-right-radius:16px;border-bottom-right-radius:16px;border-bottom-left-radius:16px;padding-top:12px;text-align:left;background-color:#f4f4f4;font-family:"Outfit", sans-serif;font-weight:400;font-size:14px;line-height:22px;letter-spacing:0%;}.chat-dialog.svelte-102bg4c {position:absolute;bottom:20px;right:5%;width:400px;height:618px;background:white;border-radius:15px;box-shadow:0 4px 12px rgba(0, 0, 0, 0.2);display:flex;flex-direction:column;overflow:hidden;}.chat-body.svelte-102bg4c {display:flex;flex-direction:column;height:100%;padding:0 12px 0 12px;padding-top:16px;padding-bottom:1.5rem;border:1px solid #ccc;position:relative;}.svelte-102bg4c::-webkit-scrollbar{display:none;}.messages.svelte-102bg4c {flex:1;overflow-y:auto;}.input.svelte-102bg4c {display:flex;gap:10px;background:#fff;margin:12px;border:none;width:376px;height:48px;box-sizing:border-box;border:1px solid #f0f0f0f5;border-radius:12px;align-items:center;padding-left:12px;padding-right:12px;}.input.svelte-102bg4c input:where(.svelte-102bg4c) {flex:1;padding:8px;}\r\n\r\n\r\n@media only screen and (max-width: 375px) {.chat-dialog.svelte-102bg4c {width:350px;margin:0;}.input.svelte-102bg4c {width:332px;}\r\n}\r\n\r\n\r\n@media only screen and (max-width: 320px) {.chat-dialog.svelte-102bg4c {right:0;width:310px;margin:0;}.chat-body.svelte-102bg4c{width:300px;}\r\n}'
+};
+function Chat($$anchor) {
+  append_styles($$anchor, $$css$1);
+  let faqs = [
+    "How do I apply?",
+    "What courses do you offer?",
+    "When do applications close?",
+    "Where is the campus located?",
+    "Talk to someone?"
+  ];
+  var div = root$1();
+  var node = child(div);
+  Header(node, {});
+  var div_1 = sibling(node, 2);
+  var div_2 = child(div_1);
+  var div_3 = sibling(child(div_2), 2);
+  var ul = child(div_3);
+  each(ul, 5, () => faqs, index, ($$anchor2, faq) => {
+    var li = root_1$1();
+    var text = child(li, true);
+    reset(li);
+    template_effect(() => set_text(text, get$1(faq)));
+    append($$anchor2, li);
+  });
+  reset(ul);
+  reset(div_3);
+  reset(div_2);
+  var div_4 = sibling(div_2, 2);
+  var input = child(div_4);
+  input.__keydown = [on_keydown$1];
+  var button = sibling(input, 2);
+  button.__click = [on_click];
+  reset(div_4);
+  reset(div_1);
+  reset(div);
+  transition(3, div, () => fly, () => ({ x: 20, duration: 300 }));
+  append($$anchor, div);
+}
+delegate(["keydown", "click"]);
+create_custom_element(Chat, {}, [], [], true);
+var on_keydown = (e, handleOpen) => e.key === "Enter" && handleOpen;
+var root_1 = /* @__PURE__ */ from_html(`<div class="chat-icon svelte-11ken29" aria-live="polite" aria-label="Chat" role="button" tabindex="0"><svg width="75" height="68" viewBox="0 0 75 68" fill="none" xmlns="http://www.w3.org/2000/svg"><g filter="url(#filter0_d_8673_2670)"><ellipse cx="37.5002" cy="30" rx="25.1296" ry="21.6667" fill="white"></ellipse><path d="M37.5002 4C21.2078 4 8 15.6409 8 30.0002C8 37.3989 11.5062 44.0755 17.1343 48.81C17.0623 51.0675 16.2932 53.302 14.9482 55.0939C17.5558 54.9875 20.1101 53.9229 22.0741 52.1664C26.5625 54.598 31.8457 56.0004 37.5002 56.0004C53.7926 56.0004 67.0004 44.3595 67.0004 30.0002C67.0004 15.6409 53.7926 4 37.5002 4ZM55.8352 42.599C54.748 43.8262 53.1989 44.516 51.5813 44.516H23.4191C21.8015 44.516 20.2524 43.8262 19.1652 42.599C16.0867 39.1239 14.2522 34.7507 14.2522 29.9998C14.2522 25.249 16.0863 20.8761 19.1648 17.401C22.5117 13.622 27.3739 10.5 37.5 10.5C45.948 10.5 52.7599 13.9097 55.8733 17.4436C58.9292 20.9115 60.7482 25.2685 60.7482 29.9994C60.7482 34.7303 58.9137 39.1239 55.8352 42.599Z" fill="url(#paint0_linear_8673_2670)"></path><path d="M31.2311 29.1936C30.3741 30.545 29.1376 29.1936 26.5542 29.1936C23.9707 29.1936 22.7346 30.545 21.8776 29.1936C21.0482 27.8852 23.3365 24.6578 26.5542 24.6578C29.7718 24.6578 32.0602 27.8856 31.2311 29.1936Z" fill="#46359D"></path><path d="M53.1223 29.1936C52.2653 30.545 51.0287 29.1936 48.4453 29.1936C45.8618 29.1936 44.6257 30.545 43.7687 29.1936C42.9393 27.8852 45.2276 24.6578 48.4453 24.6578C51.6629 24.6578 53.9513 27.8856 53.1223 29.1936Z" fill="#46359D"></path><path d="M37.4996 35.3421C35.6966 35.3421 34.5071 33.8776 34.4573 33.8155C34.1879 33.4777 34.2365 32.9798 34.5662 32.7038C34.8959 32.4278 35.382 32.4776 35.6515 32.8153C35.6565 32.8213 36.4381 33.7621 37.4996 33.7621C38.5612 33.7621 39.3427 32.8213 39.3505 32.8118C39.62 32.474 40.1045 32.4258 40.4342 32.7018C40.7639 32.9779 40.8114 33.4773 40.5415 33.8151C40.4918 33.8776 39.3023 35.3417 37.4992 35.3417L37.4996 35.3421Z" fill="#46359D"></path></g><defs><filter id="filter0_d_8673_2670" x="0" y="0" width="75.0005" height="68.0004" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"><feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood><feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix><feOffset dy="4"></feOffset><feGaussianBlur stdDeviation="4"></feGaussianBlur><feComposite in2="hardAlpha" operator="out"></feComposite><feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix><feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_8673_2670"></feBlend><feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_8673_2670" result="shape"></feBlend></filter><linearGradient id="paint0_linear_8673_2670" x1="67.0004" y1="30.0002" x2="8" y2="30.0002" gradientUnits="userSpaceOnUse"><stop stop-color="#99A1E3"></stop><stop offset="0.129808" stop-color="#858EDC"></stop><stop offset="0.389423" stop-color="#635EBA"></stop><stop offset="1" stop-color="#43319A"></stop></linearGradient></defs></svg></div>`);
+var root_3 = /* @__PURE__ */ from_html(` <!>`, 1);
+var root = /* @__PURE__ */ from_html(`<div><!> <!> <!> <!> <!></div>`);
+const $$css = {
+  hash: "svelte-11ken29",
+  code: "  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap');\r\n  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&display=swap');\r\n  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&family=Source+Sans+3:ital,wght@0,200..900;1,200..900&display=swap');\r\n  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Outfit:wght@100..900&family=Questrial&family=Source+Sans+3:ital,wght@0,200..900;1,200..900&display=swap');:host {position:fixed;bottom:1rem;right:1rem;z-index:9999;}.chat-icon.svelte-11ken29 {bottom:20px;width:60px;height:60px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 8px rgba(0, 0, 0, 0.15);box-sizing:border-box;transition:all 0.3s ease-in-out;position:relative;}.chat-icon.svelte-11ken29:hover {transform:scale(1.05);box-shadow:0 6px 12px rgba(0, 0, 0, 0.2);}"
 };
 function Widget($$anchor, $$props) {
   push($$props, true);
@@ -6083,7 +6638,7 @@ function Widget($$anchor, $$props) {
   const $openChat = () => store_get(openChat, "$openChat", $$stores);
   const $openAgent = () => store_get(openAgent, "$openAgent", $$stores);
   const handleOpen = () => {
-    open.update((val) => !val);
+    open.set(true);
     openChat.set(false);
     openFaq.set(false);
     openAgent.set(false);
@@ -6128,18 +6683,7 @@ function Widget($$anchor, $$props) {
   var node_1 = sibling(node, 2);
   {
     var consequent_1 = ($$anchor2) => {
-      var div_2 = root_2();
-      var div_3 = sibling(child(div_2), 2);
-      var div_4 = child(div_3);
-      div_4.__click = handleOpenFaq;
-      div_4.__keydown = [on_keydown_1, handleOpenFaq];
-      var div_5 = sibling(div_4, 2);
-      div_5.__click = handleOpenChat;
-      div_5.__keydown = [on_keydown_2, handleOpenChat];
-      reset(div_3);
-      reset(div_2);
-      transition(3, div_2, () => fly, () => ({ y: 20, duration: 300 }));
-      append($$anchor2, div_2);
+      Welcome($$anchor2, { handleOpenChat, handleOpenFaq });
     };
     if_block(node_1, ($$render) => {
       if ($open()) $$render(consequent_1);
@@ -6148,85 +6692,36 @@ function Widget($$anchor, $$props) {
   var node_2 = sibling(node_1, 2);
   {
     var consequent_2 = ($$anchor2) => {
-      var fragment = root_3();
-      var text = first_child(fragment);
-      var div_6 = sibling(text);
-      var div_7 = child(div_6);
-      var ul = child(div_7);
-      var div_8 = sibling(child(ul), 10);
-      div_8.__click = handleOpenAgent;
-      div_8.__keydown = [on_keydown_3, handleOpenAgent];
-      reset(ul);
-      reset(div_7);
-      reset(div_6);
+      var fragment_1 = root_3();
+      var text = first_child(fragment_1);
+      var node_3 = sibling(text);
+      Faqs(node_3, { handleOpenAgent });
       template_effect(($0) => set_text(text, `${$0 ?? ""} `), [() => open.set(false)]);
-      append($$anchor2, fragment);
+      append($$anchor2, fragment_1);
     };
     if_block(node_2, ($$render) => {
       if ($openFaq() && $open() == false) $$render(consequent_2);
     });
   }
-  var node_3 = sibling(node_2, 2);
+  var node_4 = sibling(node_2, 2);
   {
     var consequent_3 = ($$anchor2) => {
-      var div_9 = root_4();
-      var div_10 = child(div_9);
-      var div_11 = sibling(child(div_10), 2);
-      div_11.__click = () => {
-        openChat.update((val) => !val);
-        showBot.set(true);
-      };
-      div_11.__keydown = (e) => e.key === "enter" && openChat.update((val) => !val);
-      reset(div_10);
-      var div_12 = sibling(div_10, 2);
-      var div_13 = sibling(child(div_12), 2);
-      var input = child(div_13);
-      input.__keydown = [on_keydown_4];
-      var button = sibling(input, 2);
-      button.__click = [on_click];
-      reset(div_13);
-      reset(div_12);
-      reset(div_9);
-      transition(3, div_9, () => fly, () => ({ x: 20, duration: 300 }));
-      append($$anchor2, div_9);
+      Chat($$anchor2);
     };
-    if_block(node_3, ($$render) => {
+    if_block(node_4, ($$render) => {
       if ($openChat() && !$open()) $$render(consequent_3);
     });
   }
-  var node_4 = sibling(node_3, 2);
+  var node_5 = sibling(node_4, 2);
   {
     var consequent_4 = ($$anchor2) => {
-      var div_14 = root_5();
-      var div_15 = child(div_14);
-      var div_16 = sibling(child(div_15), 2);
-      div_16.__click = () => {
-        openAgent.update((val) => !val);
-        openFaq.set(false);
-        showBot.set(true);
-      };
-      div_16.__keydown = (e) => e.key === "enter" && openAgent.update((val) => !val);
-      reset(div_15);
-      var div_17 = sibling(div_15, 2);
-      var div_18 = child(div_17);
-      var ul_1 = sibling(child(div_18), 2);
-      var node_5 = sibling(child(ul_1), 2);
-      each(node_5, 17, () => get$1(users), index, ($$anchor3, user) => {
-        var li = root_6();
-        var text_1 = child(li, true);
-        reset(li);
-        template_effect(() => set_text(text_1, get$1(user).name));
-        append($$anchor3, li);
+      Agent($$anchor2, {
+        get users() {
+          return get$1(users);
+        }
       });
-      reset(ul_1);
-      reset(div_18);
-      next(2);
-      reset(div_17);
-      reset(div_14);
-      transition(3, div_14, () => fly, () => ({ x: 20, duration: 300 }));
-      append($$anchor2, div_14);
     };
-    if_block(node_4, ($$render) => {
+    if_block(node_5, ($$render) => {
       if ($openAgent() && !$open()) $$render(consequent_4);
     });
   }
