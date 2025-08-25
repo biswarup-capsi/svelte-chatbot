@@ -1,5 +1,4 @@
 <script lang="ts">
-    // import {openAgent, openFaq, showBot, openChat} from './store';
     import { fly } from 'svelte/transition';
     import Header from './Header.svelte';
 

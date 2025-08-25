@@ -10,6 +10,19 @@
   z-index: 9999;
 }
 
+*::selection {
+  background:  #43319a;
+  color: #ffffff;
+}
+*::-moz-selection {
+  background:  #43319a;
+  color: #ffffff;
+}
+*::-webkit-selection {
+  background:  #43319a;
+  color: #ffffff;
+}
+
 .chat-icon {
   bottom: 20px;
   width: 60px;
